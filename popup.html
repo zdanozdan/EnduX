@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EnduX Formularz</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div class="form-container">
+        <h3>Formularz EnduX</h3>
+        <form id="myForm">
+            <label for="name">Imię:</label>
+            <input type="text" id="name" name="name" required><br><br>
+
+            <label for="email">E-mail:</label>
+            <input type="email" id="email" name="email" required><br><br>
+
+            <button type="submit">Wyślij</button>
+        </form>
+
+	<hr/>
+	<button id="testButton">Test Button</button>
+        <div id="responseMessage"></div>
+    </div>
+    <script src="popup.js"></script>
+</body>
+</html>

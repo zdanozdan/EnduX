@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "EnduX",
+  "version": "1.0",
+  "permissions": [
+    "activeTab", "storage"
+  ],
+    "host_permissions": [
+    "http://localhost/*",  // Allow interaction with localhost URLs
+    "https://localhost/*"  // Allow interaction with secure localhost URLs
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],  // Match all URLs (you can specify a specific domain, like "https://www.google.com/*")
+      "js": ["content.js"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}
