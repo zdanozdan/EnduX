@@ -40,7 +40,7 @@ document.getElementById('myForm').addEventListener('submit', function(event) {
             cleanedPageSource = cleanedPageSource.replace(/^\s*[\r\n]/gm, '').trim();
 	    
 	    // Send the data to the local Express server
-	    const url = 'http://localhost:3000/submit';  // Local server URL
+	    const url = 'http://localhost:8000/endux/post';  // Local server URL
 	    
 	    const data = {
 		name: name,
@@ -58,12 +58,12 @@ document.getElementById('myForm').addEventListener('submit', function(event) {
 	    })
 		.then(response => response.json())
 		.then(data => {
-		    document.getElementById('responseMessage').textContent = 'Form data sent successfully!';
+		    document.getElementById('responseMessage').textContent = data.message
 		    console.log(data);  // Log server response
 		})
 		.catch((error) => {
 		    document.getElementById('responseMessage').textContent = 'There was an error sending the form.';
-		    alert(error);
+		    document.getElementById('responseMessage').textContent = response
 		    console.error('Error:', error);  // Log any errors
 		});
 	} else {

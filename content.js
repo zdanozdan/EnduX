@@ -8,7 +8,7 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
 	sendResponse({ pageSource: pageSource });
     }
     
-    return True;
+    return true;
 });
 
 // Wait until the page is fully loaded
