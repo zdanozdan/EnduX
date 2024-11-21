@@ -6,8 +6,10 @@
     "activeTab", "storage"
   ],
     "host_permissions": [
-    "http://localhost/*",  // Allow interaction with localhost URLs
-    "https://localhost/*"  // Allow interaction with secure localhost URLs
+	"http://localhost/*",  // Allow interaction with localhost URLs
+	"https://localhost/*",  // Allow interaction with secure localhost URLs
+	"https://enduhub.com/*",  // Allow interaction enduhub endpoint
+	"https://dev.enduhub.com/*"  // Allow interaction enduhub dev endpoint
   ],
   "background": {
     "service_worker": "background.js"

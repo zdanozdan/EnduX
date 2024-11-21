@@ -82,8 +82,12 @@ document.getElementById('testButton').addEventListener('click', function(event) 
     // Get the page source (HTML)
     const pageSource = document.documentElement.outerHTML;
 
+    //alert('ready to fetch data');
+
     // Send the data to the local Express server
-    const url = 'http://localhost:3000/submit';  // Local server URL
+    //const url = 'http://localhost:3000/submit';  // Local server URL
+    //const url = 'https://enduhub.com/pl/api/event/109353?format=json';
+    const url = 'https://enduhub.com/pl/api/submits/?format=json';
 
     const data = {
         name: name,
@@ -93,20 +97,36 @@ document.getElementById('testButton').addEventListener('click', function(event) 
 
     // Send data using Fetch API
     fetch(url, {
-        method: 'POST',
+        method: 'GET',
         headers: {
-            'Content-Type': 'application/json'  // Specify content type as JSON
+            'Content-Type': 'application/json',  // Specify content type as JSON
+	    'Authorization': 'Token 1c37b03696c640cec090242a792ebda46df987ec' 
         },
-        body: JSON.stringify(data)  // Convert data to JSON
     })
-    .then(response => response.json())
-    .then(data => {
-        document.getElementById('responseMessage').textContent = 'Form data sent successfully!';
-        console.log(data);  // Log server response
-    })
-    .catch((error) => {
-        document.getElementById('responseMessage').textContent = 'There was an error sending the form.';
-	alert(error)
-        console.error('Error:', error);  // Log any errors
-    });
+	.then(response => response.json())
+	.then(data => {
+	    const firstRecord = data[0];  // Get the first record in the array
+	    const imieNazwisko = firstRecord.imie_nazwisko; 
+            document.getElementById('responseMessage').textContent = imieNazwisko;
+            console.log(data);  // Log server response
+
+	    const events = data;
+
+	    // Get the dropdown element
+            const dropdown = document.getElementById('userSubmits');
+
+	    // Populate dropdown with event names
+            events.forEach(event => {
+                const option = document.createElement('option');
+                option.value = event.id;  // Set the value to event ID
+                option.textContent = event.name;  // Set the text to event name
+                dropdown.appendChild(option);
+            });
+
+	    document.getElementById('responseMessage').textContent = "Pobrano: "+events.length;
+	})
+	.catch((error) => {
+            document.getElementById('responseMessage').textContent = error;
+            console.error('Error:', error);  // Log any errors
+	});
 });
