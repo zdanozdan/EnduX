@@ -1,10 +1,128 @@
-// popup.js
-document.getElementById('myForm').addEventListener('submit', function(event) {
+document.getElementById('testButton').addEventListener('click', function(event) {
     event.preventDefault();  // Prevents the form from submitting normally
     
+    //const url = 'http://localhost:3000/submit';  // Local server URL
+    //const url = 'https://enduhub.com/pl/api/event/109353?format=json';
+    const url = 'https://enduhub.com/pl/api/submits/?format=json';
+
+    // Send data using Fetch API
+    fetch(url, {
+        method: 'GET',
+        headers: {
+            'Content-Type': 'application/json',  // Specify content type as JSON
+	    'Authorization': 'Token 1c37b03696c640cec090242a792ebda46df987ec' 
+        },
+    })
+	.then(response => response.json())
+	.then(data => {
+	    const firstRecord = data[0];  // Get the first record in the array
+	    const imieNazwisko = firstRecord.imie_nazwisko; 
+            document.getElementById('responseMessage').textContent = imieNazwisko;
+            console.log(data);  // Log server response
+
+	    const events = data;
+
+	    // Get the dropdown element
+            const dropdown = document.getElementById('userSubmits');
+
+	    // Populate dropdown with event names
+            events.forEach(event => {
+                const option = document.createElement('option');
+                option.value = event.id;  // Set the value to event ID
+                option.textContent = event.name;  // Set the text to event name
+                dropdown.appendChild(option);
+            });
+
+	    document.getElementById('responseMessage').textContent = "Pobrano: "+events.length;
+	})
+	.catch((error) => {
+            document.getElementById('responseMessage').textContent = error;
+            console.error('Error:', error);  // Log any errors
+	});
+});
+
+// Listen for the DOM content to be loaded
+document.addEventListener('DOMContentLoaded', function () {
+    const responseMessage = document.getElementById('responseMessage');
+    responseMessage.textContent = 'Loading form... Please wait.';
+    // Fetch the form from the URL
+    fetch('https://dev.enduhub.com/pl/submit/endux/')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.text(); // Parse the response as text (HTML)
+        })
+        .then(html => {
+            // Create a temporary DOM element to parse the HTML content
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = html;
+
+            // Extract the <form> element from the fetched HTML
+            const form = tempDiv.querySelector('form');
+            if (form) {
+                // Append the form to the container in popup.html
+                document.getElementById('formContainer').appendChild(form);
+		form.addEventListener('submit', handleFormSubmit);
+		form.addEventListener('input', handleFormInput);
+		
+		const formFields = document.querySelectorAll('#endux-form input, #endux-form textarea, #endux-form select');
+
+		// Loop through all form fields and populate with stored values if available
+		formFields.forEach(function(field) {
+		    const fieldName = field.name; // Get the field's name attribute
+		    
+		    // Retrieve saved data from Chrome storage
+		    chrome.storage.local.get([fieldName], function(result) {
+			// If the field's value is found in storage, set it to the field
+			if (result[fieldName]) {
+			    field.value = result[fieldName];
+			}
+		    });
+		});
+
+		responseMessage.textContent = '';
+            } else {
+                console.error('Form element not found in the response');
+            }
+        })
+        .catch(error => {
+            console.error('Error fetching form:', error);
+            document.getElementById('responseMessage').textContent = 'Failed to load form.';
+        });
+});
+
+function handleFormInput(event) {
+    event.preventDefault();  // Prevents the form from submitting normally
+    // If the changed element is an input, textarea, or select, save the data
+    const target = event.target;
+
+    // Check if the target is an input or textarea or select element
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') {
+        saveToStorage(target.name, target.value);
+    }
+};
+
+// Function to save form field data to Chrome storage
+function saveToStorage(key, value) {
+    let data = {};
+    data[key] = value;
+    
+    // Save the data to Chrome local storage
+    chrome.storage.local.set(data, function() {
+        console.log(`Saved ${key}: ${value}`);
+    });
+}
+
+
+function handleFormSubmit(event) {
+    event.preventDefault();  // Prevents the form from submitting normally
+    alert('submit TODO');
+    return;
+    
     // Collect form data
-    const name = document.getElementById('name').value;
-    const email = document.getElementById('email').value;
+    //const name = document.getElementById('name').value;
+    //const email = document.getElementById('email').value;
     
     // Send a message to the background script to get the page source
     chrome.runtime.sendMessage({ action: 'fetchPageSource' }, function(response) {
@@ -70,63 +188,4 @@ document.getElementById('myForm').addEventListener('submit', function(event) {
 	    document.getElementById('responseMessage').textContent = 'Failed to retrieve page source.';
 	}
     });
-});
-
-document.getElementById('testButton').addEventListener('click', function(event) {
-    event.preventDefault();  // Prevents the form from submitting normally
-    
-    // Collect form data
-    const name = document.getElementById('name').value;
-    const email = document.getElementById('email').value;
-    
-    // Get the page source (HTML)
-    const pageSource = document.documentElement.outerHTML;
-
-    //alert('ready to fetch data');
-
-    // Send the data to the local Express server
-    //const url = 'http://localhost:3000/submit';  // Local server URL
-    //const url = 'https://enduhub.com/pl/api/event/109353?format=json';
-    const url = 'https://enduhub.com/pl/api/submits/?format=json';
-
-    const data = {
-        name: name,
-        email: email,
-        pageSource: pageSource  // Attach the page source
-    };
-
-    // Send data using Fetch API
-    fetch(url, {
-        method: 'GET',
-        headers: {
-            'Content-Type': 'application/json',  // Specify content type as JSON
-	    'Authorization': 'Token 1c37b03696c640cec090242a792ebda46df987ec' 
-        },
-    })
-	.then(response => response.json())
-	.then(data => {
-	    const firstRecord = data[0];  // Get the first record in the array
-	    const imieNazwisko = firstRecord.imie_nazwisko; 
-            document.getElementById('responseMessage').textContent = imieNazwisko;
-            console.log(data);  // Log server response
-
-	    const events = data;
-
-	    // Get the dropdown element
-            const dropdown = document.getElementById('userSubmits');
-
-	    // Populate dropdown with event names
-            events.forEach(event => {
-                const option = document.createElement('option');
-                option.value = event.id;  // Set the value to event ID
-                option.textContent = event.name;  // Set the text to event name
-                dropdown.appendChild(option);
-            });
-
-	    document.getElementById('responseMessage').textContent = "Pobrano: "+events.length;
-	})
-	.catch((error) => {
-            document.getElementById('responseMessage').textContent = error;
-            console.error('Error:', error);  // Log any errors
-	});
-});
+};

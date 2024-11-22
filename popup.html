@@ -4,36 +4,61 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EnduX Formularz</title>
-    <link rel="stylesheet" href="popup.css">
 
-    <!-- Add Bootstrap 5 CSS CDN link -->
+    <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+
+    <link rel="stylesheet" href="popup.css"> <!-- Your custom styles (optional) -->
 </head>
 <body>
-    <div class="form-container">
-      <h3>Formularz EnduX</h3>
+  <div class="container mt-4">
 
-      <select id="userSubmits" class="form-select">
-        <option value="" disabled selected>Select Event</option>
-        <!-- Dynamic options will be added here -->
-      </select>
+        <!-- Bootstrap Tabs -->
+        <ul class="nav nav-tabs" id="myTab" role="tablist">
+            <li class="nav-item" role="presentation">
+                <a class="nav-link active" id="nowe-tab" data-bs-toggle="tab" href="#nowe" role="tab" aria-controls="nowe" aria-selected="true">Nowe</a>
+            </li>
+            <li class="nav-item" role="presentation">
+                <a class="nav-link" id="z-listy-tab" data-bs-toggle="tab" href="#z-listy" role="tab" aria-controls="z-listy" aria-selected="false">Pobierz z listy</a>
+            </li>
+        </ul>
 
-      <hr/>
-      
-      <form id="myForm">
-        <label for="name" class="form-label">Imię:</label>
-        <input type="text" id="name" name="name" class="form-control" required><br><br>
-	
-        <label for="email" class="form-label">E-mail:</label>
-        <input type="email" id="email" name="email" class="form-control" required><br><br>
-	
-        <button class="btn btn-primary" type="submit">Wyślij</button>
-      </form>
+	<!-- Response message (loading, error, or success) -->
+	<div id="responseMessage" class="text-center"></div>
 
-      <hr/>      
-      <button class="btn btn-secondary" id="testButton">Test Button</button>
-      <div id="responseMessage"></div>
+        <!-- Tab Content -->
+        <div class="tab-content mt-4" id="myTabContent">
+            <!-- "Nowe" Tab (Form) -->
+            <div class="tab-pane fade show active" id="nowe" role="tabpanel" aria-labelledby="nowe-tab">
+              <h3>Formularz EnduX</h3>
+
+              <!-- Container where the fetched form will be inserted -->
+              <div id="formContainer">
+                <!-- The form will be injected here -->
+              </div>
+            </div>
+	    
+            <!-- "Z Listy" Tab (Events List) -->
+            <div class="tab-pane fade" id="z-listy" role="tabpanel" aria-labelledby="z-listy-tab">
+              <h3>Lista wydarzeń</h3>
+	      <!-- Dropdown (Empty initially) -->
+              <div class="mb-3">
+		<label for="userSubmits" class="form-label">Wybierz Zdarzenie</label>
+		<select class="form-select" id="userSubmits" aria-label="Select Event">
+                  <!-- Options will be populated dynamically -->
+		</select>
+              </div>
+	      <!-- Test Button -->
+	      <button id="testButton" class="btn btn-secondary">Załaduj</button>
+            </div>
+        </div>
     </div>
-    <script src="popup.js"></script>
+
+    <!-- Bootstrap 5 JS and Popper.js -->
+    <script src="node_modules/jquery/dist/jquery.slim.min.js"></script>
+    <script src="node_modules//@popperjs/core/dist/umd/popper.min.js"></script>
+    <script src="node_modules/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script src="popup.js"></script> <!-- Your custom JavaScript (optional) -->
 </body>
 </html>
