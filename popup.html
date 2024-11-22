@@ -10,7 +10,7 @@
 
     <link rel="stylesheet" href="popup.css"> <!-- Your custom styles (optional) -->
 </head>
-<body>
+<body style="min-width:450px">
   <div class="container mt-4">
 
         <!-- Bootstrap Tabs -->
@@ -19,7 +19,7 @@
                 <a class="nav-link active" id="nowe-tab" data-bs-toggle="tab" href="#nowe" role="tab" aria-controls="nowe" aria-selected="true">Nowe</a>
             </li>
             <li class="nav-item" role="presentation">
-                <a class="nav-link" id="z-listy-tab" data-bs-toggle="tab" href="#z-listy" role="tab" aria-controls="z-listy" aria-selected="false">Pobierz z listy</a>
+                <a class="nav-link" id="from-list-tab" data-bs-toggle="tab" href="#from-list" role="tab" aria-controls="from-list" aria-selected="false">Pobierz z listy</a>
             </li>
         </ul>
 
@@ -39,17 +39,17 @@
             </div>
 	    
             <!-- "Z Listy" Tab (Events List) -->
-            <div class="tab-pane fade" id="z-listy" role="tabpanel" aria-labelledby="z-listy-tab">
-              <h3>Lista wydarzeń</h3>
+            <div class="tab-pane fade" id="from-list" role="tabpanel" aria-labelledby="from-list-tab">
+              <h3>Lista zgłoszeń</h3>
 	      <!-- Dropdown (Empty initially) -->
               <div class="mb-3">
-		<label for="userSubmits" class="form-label">Wybierz Zdarzenie</label>
+		<label for="userSubmits" class="form-label">Wybierz zgłoszenie</label>
 		<select class="form-select" id="userSubmits" aria-label="Select Event">
                   <!-- Options will be populated dynamically -->
 		</select>
               </div>
 	      <!-- Test Button -->
-	      <button id="testButton" class="btn btn-secondary">Załaduj</button>
+	      <button id="selectButton" class="btn btn-secondary">Wypełnij</button>
             </div>
         </div>
     </div>

@@ -1,49 +1,83 @@
-document.getElementById('testButton').addEventListener('click', function(event) {
-    event.preventDefault();  // Prevents the form from submitting normally
-    
-    //const url = 'http://localhost:3000/submit';  // Local server URL
-    //const url = 'https://enduhub.com/pl/api/event/109353?format=json';
-    const url = 'https://enduhub.com/pl/api/submits/?format=json';
-
-    // Send data using Fetch API
-    fetch(url, {
-        method: 'GET',
-        headers: {
-            'Content-Type': 'application/json',  // Specify content type as JSON
-	    'Authorization': 'Token 1c37b03696c640cec090242a792ebda46df987ec' 
-        },
-    })
-	.then(response => response.json())
-	.then(data => {
-	    const firstRecord = data[0];  // Get the first record in the array
-	    const imieNazwisko = firstRecord.imie_nazwisko; 
-            document.getElementById('responseMessage').textContent = imieNazwisko;
-            console.log(data);  // Log server response
-
-	    const events = data;
-
-	    // Get the dropdown element
-            const dropdown = document.getElementById('userSubmits');
-
-	    // Populate dropdown with event names
-            events.forEach(event => {
-                const option = document.createElement('option');
-                option.value = event.id;  // Set the value to event ID
-                option.textContent = event.name;  // Set the text to event name
-                dropdown.appendChild(option);
-            });
-
-	    document.getElementById('responseMessage').textContent = "Pobrano: "+events.length;
-	})
-	.catch((error) => {
-            document.getElementById('responseMessage').textContent = error;
-            console.error('Error:', error);  // Log any errors
-	});
-});
-
 // Listen for the DOM content to be loaded
 document.addEventListener('DOMContentLoaded', function () {
     const responseMessage = document.getElementById('responseMessage');
+
+    const selectButton = document.getElementById('selectButton');
+
+    // Check if the button exists
+    if (selectButton) {
+        // Add a click event listener
+        selectButton.addEventListener('click', () => {
+            console.log('The "Wypełnij" button was clicked!');
+            // Add your custom logic here
+	    const userSubmitsDropdown = document.getElementById('userSubmits');
+            const selectedValue = userSubmitsDropdown.value;
+
+	    // Retrieve the events from Chrome local storage
+            chrome.storage.local.get(['eventsById'], (result) => {
+                const eventResults = result.eventsById || {};
+
+                // Fetch the event based on the selected value
+                const eventDetails = eventResults[selectedValue];
+
+                if (eventDetails) {
+                    console.log('Event Details:', eventDetails);
+
+		    const form = document.getElementById('endux-form');
+		    if (form) {
+			// Iterate over the form's input fields
+			const inputs = form.querySelectorAll('input[name]');
+			inputs.forEach((input) => {
+			    const fieldName = input.name; // Get the 'name' attribute of the input
+			    if (eventDetails[fieldName]) {
+				input.value = eventDetails[fieldName]; // Populate the input with the value from storage
+				saveToStorage(fieldName, input.value);
+			    }
+			});
+
+			// Handle select dropdowns
+			const selects = form.querySelectorAll('select[name]');
+			selects.forEach((select) => {
+			    const fieldName = select.name; // Get the 'name' attribute of the select
+			    if (eventDetails[fieldName]) {
+				// Try to set the select value directly
+				const value = eventDetails[fieldName];
+
+				// Check if the value exists in the options
+				const option = Array.from(select.options).find(opt => opt.value === value);
+
+				if (option) {
+				    // If the value exists, set the select value
+				    select.value = value;
+				} else {
+				    // If the value doesn't exist, select by visible text (name)
+				    const name = eventDetails[fieldName]; // assuming the name text is in the eventDetails object
+				    const textOption = Array.from(select.options).find(opt => opt.text === name);
+				    if (textOption) {
+					select.value = textOption.value; // Set the value based on the text
+				    }
+				}
+				
+				// Save to storage (whether it was set by value or by text)
+				saveToStorage(fieldName, select.value);
+			    }
+			});
+		    }
+		};
+            });
+	});
+    }
+
+    const fromListPane = document.getElementById('from-list-tab');
+
+    if (fromListPane) {
+        fromListPane.addEventListener('click', () => {
+            console.log('Tab pane "fromlist" was clicked!');
+            // Perform your action here
+	    handleUserEvents();
+        });
+    }
+    
     responseMessage.textContent = 'Loading form... Please wait.';
     // Fetch the form from the URL
     fetch('https://dev.enduhub.com/pl/submit/endux/')
@@ -92,6 +126,55 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 });
 
+function handleUserEvents() {
+    event.preventDefault();  // Prevents the form from submitting normally
+    
+    const url = 'https://enduhub.com/pl/api/submits/?format=json';
+
+    // Send data using Fetch API
+    fetch(url, {
+        method: 'GET',
+        headers: {
+            'Content-Type': 'application/json',  // Specify content type as JSON
+	    'Authorization': 'Token 1c37b03696c640cec090242a792ebda46df987ec' 
+        },
+    })
+	.then(response => response.json())
+	.then(data => {
+	    const events = data;
+
+	    // Get the dropdown element
+            const dropdown = document.getElementById('userSubmits');
+
+	    // Populate dropdown with event names
+            events.forEach(event => {
+                const option = document.createElement('option');
+                option.value = event.id;  // Set the value to event ID
+                option.textContent = event.name;  // Set the text to event name
+                dropdown.appendChild(option);
+            });
+
+	    // Convert the array into an object indexed by ID
+	    const indexedEvents = events.reduce((acc, item) => {
+		acc[item.id] = item;
+		return acc;
+	    }, {});
+
+	    console.log(indexedEvents);
+
+	    // Save the indexed results to Chrome storage
+	    chrome.storage.local.set({ eventsById: indexedEvents }, () => {
+		console.log('Results indexed by ID saved successfully!');
+	    });
+
+	    document.getElementById('responseMessage').textContent = "Pobrano: "+events.length;
+	})
+	.catch((error) => {
+            document.getElementById('responseMessage').textContent = error;
+            console.error('Error:', error);  // Log any errors
+	});
+};
+
 function handleFormInput(event) {
     event.preventDefault();  // Prevents the form from submitting normally
     // If the changed element is an input, textarea, or select, save the data
@@ -114,20 +197,25 @@ function saveToStorage(key, value) {
     });
 }
 
-
 function handleFormSubmit(event) {
     event.preventDefault();  // Prevents the form from submitting normally
-    alert('submit TODO');
-    return;
+
+    alert('PING');
     
-    // Collect form data
-    //const name = document.getElementById('name').value;
-    //const email = document.getElementById('email').value;
+    chrome.runtime.sendMessage({ action: 'PING' }, function(response) {
+	if (response && response.source) {
+	    alert(response.source);
+	}
+    });
+
+    return;
     
     // Send a message to the background script to get the page source
     chrome.runtime.sendMessage({ action: 'fetchPageSource' }, function(response) {
 	if (response && response.pageSource) {
 	    const pageSource = response.pageSource;
+	    alert("OK");
+	    return;
 	    
 	    // Create a temporary DOM element to parse the page source
             const parser = new DOMParser();
