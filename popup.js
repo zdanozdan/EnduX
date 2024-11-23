@@ -200,23 +200,11 @@ function saveToStorage(key, value) {
 function handleFormSubmit(event) {
     event.preventDefault();  // Prevents the form from submitting normally
 
-    alert('PING');
-    
-    chrome.runtime.sendMessage({ action: 'PING' }, function(response) {
-	if (response && response.source) {
-	    alert(response.source);
-	}
-    });
-
-    return;
-    
     // Send a message to the background script to get the page source
-    chrome.runtime.sendMessage({ action: 'fetchPageSource' }, function(response) {
+    chrome.runtime.sendMessage({ action: 'fetchPageSource' }, function(response) {	
 	if (response && response.pageSource) {
 	    const pageSource = response.pageSource;
-	    alert("OK");
-	    return;
-	    
+
 	    // Create a temporary DOM element to parse the page source
             const parser = new DOMParser();
             const doc = parser.parseFromString(pageSource, 'text/html');
@@ -247,13 +235,29 @@ function handleFormSubmit(event) {
 	    
 	    // Send the data to the local Express server
 	    const url = 'http://localhost:8000/endux/post';  // Local server URL
-	    
+
+	    // Get the container
+	    const formContainer = document.getElementById('formContainer');
+
+	    // Find the form inside the container
+	    const form = formContainer.querySelector('form');
+	    const formData = new FormData(form); // Create a FormData object from the form
 	    const data = {
-		name: name,
-		email: email,
 		pageSource: cleanedPageSource  // Attach the page source
 	    };
+
+	    // Iterate through the FormData entries and populate the data object
+	    formData.forEach((value, key) => {
+		data[key] = value; // Add each form field name and its value to the data object
+	    });
+
+	    //data['pageSource'] = cleanedPageSource;
 	    
+	    //const data = {
+	//	name: name,
+	//	pageSource: cleanedPageSource  // Attach the page source
+	  //  };
+
 	    // Send data using Fetch API
 	    fetch(url, {
 		method: 'POST',
@@ -266,6 +270,7 @@ function handleFormSubmit(event) {
 		.then(data => {
 		    document.getElementById('responseMessage').textContent = data.message
 		    console.log(data);  // Log server response
+		    document.getElementById('formContainer').innerHTML = '';
 		})
 		.catch((error) => {
 		    document.getElementById('responseMessage').textContent = 'There was an error sending the form.';
