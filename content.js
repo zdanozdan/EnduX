@@ -25,6 +25,30 @@ function updateAllClipboardInfo() {
     });
 }
 
+// Function to open clipboard content in a new tab
+function openClipboardInNewTab() {
+    chrome.storage.local.get(['accumulatedClipboard'], function(result) {
+	const content = result.accumulatedClipboard || '';
+	
+	if (!content || content.trim().length === 0) {
+	    showToast('⚠️ Schowek jest pusty', 'warning');
+	    return;
+	}
+	
+	// Send message to background script to open new tab
+	chrome.runtime.sendMessage({
+	    action: 'openClipboardInNewTab',
+	    content: content
+	}, function(response) {
+	    if (response && response.success) {
+		showToast('✅ Zawartość schowka otwarta w nowej zakładce', 'success');
+	    } else {
+		showToast('❌ Nie udało się otworzyć zawartości schowka', 'error');
+	    }
+	});
+    });
+}
+
 // Function to show toast message
 function showToast(message, type = 'success', rowCount = null) {
     // Remove existing toast if any
@@ -410,6 +434,25 @@ window.addEventListener('load', function() {
 	    clipboardInfo.style.fontSize = '13px';
 	    clipboardInfo.style.color = '#6c757d';
 	    clipboardInfo.style.fontWeight = '500';
+	    clipboardInfo.style.cursor = 'pointer';
+	    clipboardInfo.style.textDecoration = 'underline';
+	    clipboardInfo.style.transition = 'color 0.2s ease';
+	    clipboardInfo.title = 'Kliknij, aby otworzyć zawartość schowka w nowej zakładce';
+	    
+	    // Hover effect for clipboard info
+	    clipboardInfo.addEventListener('mouseenter', function() {
+		clipboardInfo.style.color = '#007bff';
+	    });
+	    
+	    clipboardInfo.addEventListener('mouseleave', function() {
+		clipboardInfo.style.color = '#6c757d';
+	    });
+	    
+	    // Open clipboard in new tab on click
+	    clipboardInfo.addEventListener('click', function(e) {
+		e.stopPropagation();
+		openClipboardInNewTab();
+	    });
 	    
 	    // Create clear button (trash icon)
 	    const clearButton = document.createElement('button');
