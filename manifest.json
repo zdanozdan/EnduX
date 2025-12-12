@@ -9,7 +9,8 @@
     },
     "permissions": [
 	"activeTab",
-	"storage"
+	"storage",
+	"contextMenus"
 	//"https://*.*"
     ],
     "host_permissions": [
@@ -33,6 +34,22 @@
 	    "16": "images/icon16.png",
 	    "48": "images/icon48.png",
 	    "128": "images/icon128.png"
+	}
+    },
+    "commands": {
+	"copy-table": {
+	    "suggested_key": {
+		"default": "Ctrl+C",
+		"mac": "Command+C"
+	    },
+	    "description": "Kopiuj tabelę"
+	},
+	"append-table": {
+	    "suggested_key": {
+		"default": "Ctrl+A",
+		"mac": "Command+A"
+	    },
+	    "description": "Dołącz tabelę do schowka"
 	}
     }
 }

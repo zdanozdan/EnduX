@@ -2,6 +2,80 @@
 document.addEventListener('DOMContentLoaded', function () {
     const responseMessage = document.getElementById('responseMessage');
 
+    // Handle extension enable/disable checkbox
+    const extensionEnabledCheckbox = document.getElementById('extensionEnabled');
+    
+    if (extensionEnabledCheckbox) {
+	// Load saved state (default to enabled)
+	chrome.storage.local.get(['extensionEnabled'], function(result) {
+	    const isEnabled = result.extensionEnabled !== false; // Default to true if not set
+	    extensionEnabledCheckbox.checked = isEnabled;
+	    
+	    // Update context menu when popup opens
+	    updateContextMenu(isEnabled);
+	});
+	
+	// Handle checkbox change
+	extensionEnabledCheckbox.addEventListener('change', function() {
+	    const isEnabled = extensionEnabledCheckbox.checked;
+	    
+	    // Save state to storage
+	    chrome.storage.local.set({ extensionEnabled: isEnabled }, function() {
+		console.log('Extension enabled state saved:', isEnabled);
+	    });
+	    
+	    // Update context menu
+	    updateContextMenu(isEnabled);
+	    
+	    // Reload all tabs to apply changes
+	    chrome.tabs.query({}, function(tabs) {
+		tabs.forEach(function(tab) {
+		    chrome.tabs.reload(tab.id);
+		});
+	    });
+	});
+    }
+    
+    // Function to update context menu
+    function updateContextMenu(isEnabled) {
+	chrome.runtime.sendMessage({
+	    action: 'updateContextMenu',
+	    enabled: isEnabled
+	});
+    }
+    
+    // Handle prevent duplicates checkbox
+    const preventDuplicatesCheckbox = document.getElementById('preventDuplicates');
+    if (preventDuplicatesCheckbox) {
+	// Load saved state (default to checked)
+	chrome.storage.local.get(['preventDuplicates'], function(result) {
+	    const preventDuplicates = result.preventDuplicates !== false; // Default to true
+	    preventDuplicatesCheckbox.checked = preventDuplicates;
+	});
+	
+	// Handle checkbox change
+	preventDuplicatesCheckbox.addEventListener('change', function() {
+	    const preventDuplicates = preventDuplicatesCheckbox.checked;
+	    chrome.storage.local.set({ preventDuplicates: preventDuplicates }, function() {
+		console.log('Prevent duplicates state saved:', preventDuplicates);
+	    });
+	});
+    }
+    
+    // Handle clear clipboard button
+    const clearClipboardButton = document.getElementById('clearClipboard');
+    if (clearClipboardButton) {
+	clearClipboardButton.addEventListener('click', function() {
+	    chrome.storage.local.remove(['accumulatedClipboard', 'clipboardHashes'], function() {
+		alert('Schowek wyczyszczony');
+		clearClipboardButton.textContent = '✓ Wyczyszczono';
+		setTimeout(function() {
+		    clearClipboardButton.textContent = 'Wyczyść schowek';
+		}, 2000);
+	    });
+	});
+    }
+
     const selectButton = document.getElementById('selectButton');
 
     // Check if the button exists
