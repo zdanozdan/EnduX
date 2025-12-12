@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Zawartość schowka - EnduX</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-top: 0;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+        }
+        .record-count {
+            font-size: 16px;
+            font-weight: normal;
+            color: #6c757d;
+            margin-left: 10px;
+        }
+        .table-wrapper {
+            overflow-x: auto;
+            margin: 20px 0;
+        }
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+            background-color: white;
+        }
+        .data-table td {
+            padding: 10px 15px;
+            border: 1px solid #dee2e6;
+            vertical-align: top;
+        }
+        .data-table tr:nth-child(even) {
+            background-color: #f8f9fa;
+        }
+        .data-table tr:nth-child(odd) {
+            background-color: white;
+        }
+        .data-table tr:hover {
+            background-color: #e7f3ff;
+        }
+        .data-table td.row-number {
+            font-weight: 600;
+            color: #495057;
+            background-color: #e9ecef;
+            text-align: center;
+            min-width: 50px;
+        }
+        .data-table td.delete-cell {
+            text-align: center;
+            width: 50px;
+            padding: 5px;
+        }
+        .delete-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+            padding: 5px 8px;
+            border-radius: 4px;
+            transition: all 0.2s ease;
+            opacity: 0.6;
+        }
+        .delete-btn:hover {
+            opacity: 1;
+            background-color: #ffebee;
+            transform: scale(1.1);
+        }
+        .delete-btn:active {
+            transform: scale(0.95);
+        }
+        .data-table tr.deleted {
+            display: none;
+        }
+        .info {
+            color: #6c757d;
+            font-size: 12px;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #dee2e6;
+        }
+        #loading-indicator {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #6c757d;
+            font-style: italic;
+        }
+        #loading-indicator.loading {
+            display: block;
+        }
+        #initial-loading {
+            text-align: center;
+            padding: 40px;
+            color: #6c757d;
+            font-size: 16px;
+        }
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background-color: #28a745;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            z-index: 10000;
+            font-size: 14px;
+            font-weight: 500;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        .toast.show {
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📋 Zawartość schowka<span class="record-count" id="record-count">(ładowanie...)</span></h1>
+        <div class="table-wrapper">
+            <div id="initial-loading">Ładowanie danych ze schowka...</div>
+            <table class="data-table" id="data-table" style="display: none;"></table>
+            <div id="loading-indicator" style="text-align: center; padding: 20px; color: #6c757d;">Ładowanie kolejnych rekordów...</div>
+        </div>
+        <div class="info">
+            Wygenerowano przez rozszerzenie EnduX | Wyświetlono <span id="displayed-count">0</span> rekordów
+        </div>
+    </div>
+    <script src="clipboard-viewer.js"></script>
+</body>
+</html>
+

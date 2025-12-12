@@ -27,26 +27,46 @@ function updateAllClipboardInfo() {
 
 // Function to open clipboard content in a new tab
 function openClipboardInNewTab() {
-    chrome.storage.local.get(['accumulatedClipboard'], function(result) {
-	const content = result.accumulatedClipboard || '';
-	
-	if (!content || content.trim().length === 0) {
-	    showToast('⚠️ Schowek jest pusty', 'warning');
-	    return;
-	}
-	
-	// Send message to background script to open new tab
-	chrome.runtime.sendMessage({
-	    action: 'openClipboardInNewTab',
-	    content: content
-	}, function(response) {
-	    if (response && response.success) {
-		showToast('✅ Zawartość schowka otwarta w nowej zakładce', 'success');
-	    } else {
-		showToast('❌ Nie udało się otworzyć zawartości schowka', 'error');
+    try {
+	chrome.storage.local.get(['accumulatedClipboard'], function(result) {
+	    // Check if extension context is still valid
+	    if (chrome.runtime.lastError) {
+		console.error('Extension context error:', chrome.runtime.lastError);
+		showToast('⚠️ Rozszerzenie zostało przeładowane. Odśwież stronę.', 'warning');
+		return;
 	    }
+	    
+	    const content = result.accumulatedClipboard || '';
+	    
+	    if (!content || content.trim().length === 0) {
+		showToast('⚠️ Schowek jest pusty', 'warning');
+		return;
+	    }
+	    
+	    // Send message to background script to open new tab
+	    chrome.runtime.sendMessage({
+		action: 'openClipboardInNewTab',
+		content: content
+	    }, function(response) {
+		// Check if extension context is still valid
+		if (chrome.runtime.lastError) {
+		    console.error('Extension context error:', chrome.runtime.lastError);
+		    showToast('⚠️ Rozszerzenie zostało przeładowane. Odśwież stronę.', 'warning');
+		    return;
+		}
+		
+		if (response && response.success) {
+		    showToast('✅ Zawartość schowka otwarta w nowej zakładce', 'success');
+		} else {
+		    const errorMsg = response && response.message ? response.message : 'Nie udało się otworzyć zawartości schowka';
+		    showToast('❌ ' + errorMsg, 'error');
+		}
+	    });
 	});
-    });
+    } catch (error) {
+	console.error('Error opening clipboard:', error);
+	showToast('⚠️ Błąd: Rozszerzenie zostało przeładowane. Odśwież stronę.', 'error');
+    }
 }
 
 // Function to show toast message
@@ -237,6 +257,10 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
 	
 	// Send the page source back to the background script or popup
 	sendResponse({ pageSource: pageSource });
+    } else if (request.action === 'updateClipboardInfo') {
+	// Update clipboard info on this page
+	updateAllClipboardInfo();
+	sendResponse({ success: true });
     } else if (request.action === 'copyTable') {
 	// Check if extension is enabled
 	chrome.storage.local.get(['extensionEnabled', 'includeHeaderPreference'], function(result) {
