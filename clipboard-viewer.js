@@ -74,6 +74,84 @@
         showToast('✅ Wiersz usunięty');
     }
     
+    function deleteColumn(colIndex) {
+        // Remove column from all rows in allRows array
+        allRows.forEach(function(row) {
+            if (row.length > colIndex) {
+                row.splice(colIndex, 1);
+            }
+        });
+        
+        // Update maxCols
+        maxCols = Math.max(...allRows.map(row => row.length), 0);
+        
+        // Remove column from DOM (skip first column which is delete button)
+        const allTableRows = table.querySelectorAll('tr');
+        allTableRows.forEach(function(tr) {
+            // Get all cells except the first one (delete button)
+            const cells = tr.querySelectorAll('td');
+            // colIndex + 1 because first cell is delete button
+            if (cells.length > colIndex + 1) {
+                const cellToRemove = cells[colIndex + 1];
+                if (cellToRemove) {
+                    cellToRemove.style.transition = 'opacity 0.3s ease';
+                    cellToRemove.style.opacity = '0';
+                    setTimeout(function() {
+                        cellToRemove.remove();
+                    }, 300);
+                }
+            }
+        });
+        
+        // Update clipboard storage
+        updateClipboardAfterColumnDelete();
+        
+        showToast('✅ Kolumna usunięta');
+    }
+    
+    function updateClipboardAfterColumnDelete() {
+        // Reconstruct content from allRows (excluding deleted rows)
+        const remainingRows = [];
+        for (let i = 0; i < allRows.length; i++) {
+            if (!deletedRows.has(i)) {
+                remainingRows.push(allRows[i].join('\t'));
+            }
+        }
+        
+        const updatedContent = remainingRows.join('\n');
+        
+        // Update storage
+        chrome.storage.local.get(['clipboardHashes'], function(result) {
+            if (chrome.runtime.lastError) {
+                console.error('Error getting clipboardHashes:', chrome.runtime.lastError);
+                return;
+            }
+            
+            const clipboardHashes = result.clipboardHashes || [];
+            
+            chrome.storage.local.set({
+                accumulatedClipboard: updatedContent,
+                clipboardHashes: clipboardHashes
+            }, function() {
+                if (chrome.runtime.lastError) {
+                    console.error('Error updating storage:', chrome.runtime.lastError);
+                    return;
+                }
+                
+                // Update clipboard
+                navigator.clipboard.writeText(updatedContent).catch(function(err) {
+                    console.error('Failed to update clipboard:', err);
+                });
+                
+                // Update originalContent
+                originalContent = updatedContent;
+                
+                // Notify all tabs to update clipboard info
+                notifyAllTabsToUpdateClipboardInfo();
+            });
+        });
+    }
+    
     function removeRowFromClipboard(rowIndex) {
         if (!originalContent || rowIndex < 0 || rowIndex >= allRows.length) return;
         
@@ -179,14 +257,40 @@
         }
     }
     
+    // Helper function to check if a row is a header (matches first row)
+    function isHeaderRow(rowIndex) {
+        if (rowIndex === 0) return true; // First row is always header
+        if (allRows.length === 0) return false;
+        
+        const firstRow = allRows[0];
+        const currentRow = allRows[rowIndex];
+        
+        // Check if current row matches first row (header)
+        if (firstRow.length !== currentRow.length) return false;
+        
+        for (let i = 0; i < firstRow.length; i++) {
+            if (firstRow[i] !== currentRow[i]) {
+                return false;
+            }
+        }
+        
+        return true;
+    }
+    
     function loadInitialRows() {
         const initialRows = allRows.slice(0, loadedCount);
         
-        initialRows.forEach((row, rowIndex) => {
+        initialRows.forEach((row, localIndex) => {
+            const rowIndex = localIndex; // Actual row index in allRows
             const tr = document.createElement('tr');
             tr.setAttribute('data-row-index', rowIndex);
             
-            // Add delete button as first column
+            // Mark header rows (first row or rows matching first row)
+            if (isHeaderRow(rowIndex)) {
+                tr.className = 'header-row';
+            }
+            
+            // Add delete button as first column (for all rows including headers)
             const deleteCell = document.createElement('td');
             deleteCell.className = 'delete-cell';
             const deleteBtn = document.createElement('button');
@@ -206,7 +310,46 @@
                 const cellClass = i === 0 ? 'row-number' : '';
                 const td = document.createElement('td');
                 td.className = cellClass;
-                td.textContent = cellContent;
+                td.setAttribute('data-col-index', i);
+                
+                // Add delete column button in header rows
+                if (isHeaderRow(rowIndex)) {
+                    const cellWrapper = document.createElement('div');
+                    cellWrapper.style.display = 'flex';
+                    cellWrapper.style.alignItems = 'center';
+                    cellWrapper.style.justifyContent = 'space-between';
+                    cellWrapper.style.gap = '8px';
+                    
+                    const textSpan = document.createElement('span');
+                    textSpan.textContent = cellContent;
+                    cellWrapper.appendChild(textSpan);
+                    
+                    const deleteColBtn = document.createElement('button');
+                    deleteColBtn.className = 'delete-col-btn';
+                    deleteColBtn.setAttribute('title', 'Usuń kolumnę');
+                    deleteColBtn.setAttribute('data-col-index', i);
+                    deleteColBtn.textContent = '✕';
+                    deleteColBtn.style.cssText = 'background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white; cursor: pointer; padding: 2px 6px; border-radius: 3px; font-size: 12px; font-weight: bold; opacity: 0.7; transition: all 0.2s;';
+                    deleteColBtn.addEventListener('mouseenter', function() {
+                        this.style.opacity = '1';
+                        this.style.background = 'rgba(255,255,255,0.3)';
+                    });
+                    deleteColBtn.addEventListener('mouseleave', function() {
+                        this.style.opacity = '0.7';
+                        this.style.background = 'rgba(255,255,255,0.2)';
+                    });
+                    deleteColBtn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        const colIndex = parseInt(this.getAttribute('data-col-index'));
+                        deleteColumn(colIndex);
+                    });
+                    cellWrapper.appendChild(deleteColBtn);
+                    
+                    td.appendChild(cellWrapper);
+                } else {
+                    td.textContent = cellContent;
+                }
+                
                 tr.appendChild(td);
             }
             
@@ -237,7 +380,12 @@
                 const tr = document.createElement('tr');
                 tr.setAttribute('data-row-index', i);
                 
-                // Add delete button as first column
+                // Mark header rows (first row or rows matching first row)
+                if (isHeaderRow(i)) {
+                    tr.className = 'header-row';
+                }
+                
+                // Add delete button as first column (for all rows including headers)
                 const deleteCell = document.createElement('td');
                 deleteCell.className = 'delete-cell';
                 const deleteBtn = document.createElement('button');
@@ -258,7 +406,46 @@
                     const cellClass = j === 0 ? 'row-number' : '';
                     const td = document.createElement('td');
                     td.className = cellClass;
-                    td.textContent = cellContent;
+                    td.setAttribute('data-col-index', j);
+                    
+                    // Add delete column button in header rows
+                    if (isHeaderRow(i)) {
+                        const cellWrapper = document.createElement('div');
+                        cellWrapper.style.display = 'flex';
+                        cellWrapper.style.alignItems = 'center';
+                        cellWrapper.style.justifyContent = 'space-between';
+                        cellWrapper.style.gap = '8px';
+                        
+                        const textSpan = document.createElement('span');
+                        textSpan.textContent = cellContent;
+                        cellWrapper.appendChild(textSpan);
+                        
+                        const deleteColBtn = document.createElement('button');
+                        deleteColBtn.className = 'delete-col-btn';
+                        deleteColBtn.setAttribute('title', 'Usuń kolumnę');
+                        deleteColBtn.setAttribute('data-col-index', j);
+                        deleteColBtn.textContent = '✕';
+                        deleteColBtn.style.cssText = 'background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white; cursor: pointer; padding: 2px 6px; border-radius: 3px; font-size: 12px; font-weight: bold; opacity: 0.7; transition: all 0.2s;';
+                        deleteColBtn.addEventListener('mouseenter', function() {
+                            this.style.opacity = '1';
+                            this.style.background = 'rgba(255,255,255,0.3)';
+                        });
+                        deleteColBtn.addEventListener('mouseleave', function() {
+                            this.style.opacity = '0.7';
+                            this.style.background = 'rgba(255,255,255,0.2)';
+                        });
+                        deleteColBtn.addEventListener('click', function(e) {
+                            e.stopPropagation();
+                            const colIndex = parseInt(this.getAttribute('data-col-index'));
+                            deleteColumn(colIndex);
+                        });
+                        cellWrapper.appendChild(deleteColBtn);
+                        
+                        td.appendChild(cellWrapper);
+                    } else {
+                        td.textContent = cellContent;
+                    }
+                    
                     tr.appendChild(td);
                 }
                 

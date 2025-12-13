@@ -1,7 +1,245 @@
+// Function to show toast message in popup
+function showToast(message, type = 'success') {
+    // Remove existing toast if any
+    const existingToast = document.getElementById('popup-toast');
+    if (existingToast) {
+        existingToast.remove();
+    }
+
+    // Create toast element
+    const toast = document.createElement('div');
+    toast.id = 'popup-toast';
+    
+    // Set colors based on type
+    let bgColor = '#28a745'; // success (green)
+    if (type === 'error') bgColor = '#dc3545'; // error (red)
+    if (type === 'warning') bgColor = '#ffc107'; // warning (yellow)
+    
+    toast.textContent = message;
+    toast.style.position = 'fixed';
+    toast.style.top = '20px';
+    toast.style.right = '20px';
+    toast.style.backgroundColor = bgColor;
+    toast.style.color = '#ffffff';
+    toast.style.padding = '12px 24px';
+    toast.style.borderRadius = '6px';
+    toast.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.15)';
+    toast.style.zIndex = '10000';
+    toast.style.fontSize = '14px';
+    toast.style.fontWeight = '500';
+    toast.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+    toast.style.opacity = '0';
+    toast.style.transition = 'opacity 0.3s ease';
+    toast.style.pointerEvents = 'none';
+
+    document.body.appendChild(toast);
+
+    // Fade in
+    setTimeout(() => {
+        toast.style.opacity = '1';
+    }, 10);
+
+    // Fade out and remove after 3 seconds
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        setTimeout(() => {
+            toast.remove();
+        }, 300);
+    }, 3000);
+}
+
+// Function to load form
+function loadForm() {
+    const responseMessage = document.getElementById('responseMessage');
+    if (!responseMessage) return;
+    
+    responseMessage.textContent = 'Loading form... Please wait.';
+    responseMessage.style.display = '';
+    // Fetch the form from the URL
+    fetch('https://p3.enduhub.com/pl/zgloszenia/wszystkie/')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok: ' + response.status);
+            }
+            return response.text(); // Parse the response as text (HTML)
+        })
+        .then(html => {
+            
+            // Create a temporary DOM element to parse the HTML content
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = html;
+
+            // Try to find the submission form (not search form)
+            // Look for form with action containing "zgloszenia" or "nowe"
+            let form = tempDiv.querySelector('form[action*="zgloszenia"]');
+            
+            if (!form) {
+                // Try to find form with specific fields (name, url, country, location, date, category)
+                const allForms = tempDiv.querySelectorAll('form');
+                
+                // Look for form that has fields like name, url, country, location, date, category
+                for (let i = 0; i < allForms.length; i++) {
+                    const testForm = allForms[i];
+                    const hasName = testForm.querySelector('input[name="name"]');
+                    const hasUrl = testForm.querySelector('input[name="url"]');
+                    const hasCountry = testForm.querySelector('select[name="country"]');
+                    const hasLocation = testForm.querySelector('input[name="location"]');
+                    const hasDate = testForm.querySelector('input[name="date"]');
+                    const hasCategory = testForm.querySelector('select[name="category"]');
+                    
+                    if (hasName && hasUrl && hasCountry && hasLocation && hasDate && hasCategory) {
+                        form = testForm;
+                        break;
+                    }
+                }
+            }
+            
+            // Fallback: try form with ID endux-form
+            if (!form) {
+                form = tempDiv.querySelector('form#endux-form');
+            }
+            
+            // Last resort: any form (but skip search forms)
+            if (!form) {
+                const allForms = tempDiv.querySelectorAll('form');
+                for (let i = 0; i < allForms.length; i++) {
+                    const testForm = allForms[i];
+                    // Skip search forms
+                    if (!testForm.id || !testForm.id.includes('search')) {
+                        form = testForm;
+                        break;
+                    }
+                }
+            }
+            
+            if (form) {
+                // Check if this is the right form (submission form, not search form)
+                const isSearchForm = form.action && (form.action.includes('/szukaj/') || form.id && form.id.includes('search'));
+                const hasSubmissionFields = form.querySelector('input[name="name"]') && form.querySelector('input[name="url"]') && form.querySelector('select[name="country"]');
+                
+                if (isSearchForm && !hasSubmissionFields) {
+                    responseMessage.textContent = 'Znaleziono formularz wyszukiwania zamiast formularza zgłoszenia. Formularz może być na innej stronie.';
+                    responseMessage.className = 'alert alert-warning';
+                    responseMessage.style.display = '';
+                    return;
+                }
+                
+                // Set form ID if it doesn't have one (for compatibility)
+                if (!form.id) {
+                    form.id = 'endux-form';
+                }
+                
+                // Append the form to the container in popup.html
+                const container = document.getElementById('formContainer');
+                container.appendChild(form);
+                
+                // Remove "Anuluj" (Cancel) button - keep only "Zgłoś wyniki" (Submit) button
+                const cancelButtons = form.querySelectorAll('button, input[type="button"], input[type="reset"], a.btn');
+                cancelButtons.forEach(function(btn) {
+                    const btnText = btn.textContent || btn.value || '';
+                    if (btnText.toLowerCase().includes('anuluj') || 
+                        btnText.toLowerCase().includes('cancel') ||
+                        btn.type === 'reset' ||
+                        btn.classList.contains('cancel') ||
+                        btn.classList.contains('btn-secondary') && !btnText.toLowerCase().includes('zgłoś') && !btnText.toLowerCase().includes('submit')) {
+                        btn.remove();
+                    }
+                });
+                
+                form.addEventListener('submit', handleFormSubmit);
+                form.addEventListener('input', handleFormInput);
+                
+                // Use the form element directly instead of querying by ID
+                const formFields = form.querySelectorAll('input, textarea, select');
+
+                // Loop through all form fields and populate with stored values if available
+                formFields.forEach(function(field) {
+                    const fieldName = field.name; // Get the field's name attribute
+                    
+                    if (fieldName && fieldName !== 'csrfmiddlewaretoken') { // Skip CSRF token
+                        // Retrieve saved data from Chrome storage
+                        chrome.storage.local.get([fieldName], function(result) {
+                            // If the field's value is found in storage, set it to the field
+                            if (result[fieldName] !== undefined) {
+                                if (field.type === 'checkbox') {
+                                    field.checked = result[fieldName] === true || result[fieldName] === 'true';
+                                } else {
+                                    field.value = result[fieldName];
+                                }
+                            }
+                        });
+                    }
+                });
+
+                responseMessage.textContent = '';
+                responseMessage.style.display = 'none';
+            } else {
+                responseMessage.textContent = 'Formularz nie został znaleziony na stronie.';
+                responseMessage.className = 'alert alert-danger';
+                responseMessage.style.display = '';
+            }
+        })
+        .catch(error => {
+            const errorMsg = document.getElementById('responseMessage');
+            errorMsg.textContent = 'Failed to load form: ' + error.message;
+            errorMsg.className = 'alert alert-danger';
+            errorMsg.style.display = '';
+        });
+}
+
+// Function to setup from-list tab
+function setupFromListTab() {
+    const fromListPane = document.getElementById('from-list-tab');
+
+    if (fromListPane) {
+        fromListPane.addEventListener('click', () => {
+            // Perform your action here
+            handleUserEvents();
+        });
+    }
+}
+
 // Listen for the DOM content to be loaded
 document.addEventListener('DOMContentLoaded', function () {
     const responseMessage = document.getElementById('responseMessage');
+    
+    if (!responseMessage) {
+        return;
+    }
 
+    // Function to show/hide tabs and content based on extension state
+    function toggleExtensionFeatures(isEnabled) {
+	const noweTab = document.getElementById('nowe-tab');
+	const fromListTab = document.getElementById('from-list-tab');
+	const nowePane = document.getElementById('nowe');
+	const fromListPane = document.getElementById('from-list');
+	
+	if (noweTab && fromListTab) {
+	    if (isEnabled) {
+		noweTab.style.display = '';
+		fromListTab.style.display = '';
+		if (nowePane) nowePane.style.display = '';
+		if (fromListPane) fromListPane.style.display = '';
+	    } else {
+		noweTab.style.display = 'none';
+		fromListTab.style.display = 'none';
+		if (nowePane) nowePane.style.display = 'none';
+		if (fromListPane) fromListPane.style.display = 'none';
+		
+		// Switch to Ustawienia tab if extension is disabled
+		const ustawieniaTab = document.getElementById('ustawienia-tab');
+		if (ustawieniaTab) {
+		    if (typeof bootstrap !== 'undefined' && bootstrap.Tab) {
+			const tab = new bootstrap.Tab(ustawieniaTab);
+			tab.show();
+		    } else {
+			ustawieniaTab.click();
+		    }
+		}
+	    }
+	}
+    }
+    
     // Handle extension enable/disable checkbox
     const extensionEnabledCheckbox = document.getElementById('extensionEnabled');
     
@@ -13,6 +251,15 @@ document.addEventListener('DOMContentLoaded', function () {
 	    
 	    // Update context menu when popup opens
 	    updateContextMenu(isEnabled);
+	    
+	    // Show/hide tabs based on extension state
+	    toggleExtensionFeatures(isEnabled);
+	    
+	    // Load form and list only if extension is enabled
+	    if (isEnabled) {
+		loadForm();
+		setupFromListTab();
+	    }
 	});
 	
 	// Handle checkbox change
@@ -21,11 +268,30 @@ document.addEventListener('DOMContentLoaded', function () {
 	    
 	    // Save state to storage
 	    chrome.storage.local.set({ extensionEnabled: isEnabled }, function() {
-		console.log('Extension enabled state saved:', isEnabled);
 	    });
 	    
 	    // Update context menu
 	    updateContextMenu(isEnabled);
+	    
+	    // Show/hide tabs based on extension state
+	    toggleExtensionFeatures(isEnabled);
+	    
+	    // Load form and list only if extension is enabled
+	    if (isEnabled) {
+		loadForm();
+		setupFromListTab();
+	    } else {
+		// Clear form container when disabled
+		const formContainer = document.getElementById('formContainer');
+		if (formContainer) {
+		    formContainer.innerHTML = '';
+		}
+		// Clear dropdown when disabled
+		const userSubmitsDropdown = document.getElementById('userSubmits');
+		if (userSubmitsDropdown) {
+		    userSubmitsDropdown.innerHTML = '<option value="">Wybierz zgłoszenie</option>';
+		}
+	    }
 	    
 	    // Reload all tabs to apply changes
 	    chrome.tabs.query({}, function(tabs) {
@@ -57,7 +323,6 @@ document.addEventListener('DOMContentLoaded', function () {
 	preventDuplicatesCheckbox.addEventListener('change', function() {
 	    const preventDuplicates = preventDuplicatesCheckbox.checked;
 	    chrome.storage.local.set({ preventDuplicates: preventDuplicates }, function() {
-		console.log('Prevent duplicates state saved:', preventDuplicates);
 	    });
 	});
     }
@@ -67,10 +332,59 @@ document.addEventListener('DOMContentLoaded', function () {
     if (clearClipboardButton) {
 	clearClipboardButton.addEventListener('click', function() {
 	    chrome.storage.local.remove(['accumulatedClipboard', 'clipboardHashes'], function() {
-		alert('Schowek wyczyszczony');
 		clearClipboardButton.textContent = '✓ Wyczyszczono';
 		setTimeout(function() {
 		    clearClipboardButton.textContent = 'Wyczyść schowek';
+		}, 2000);
+	    });
+	});
+    }
+    
+    // Display version from manifest
+    const versionElement = document.getElementById('version');
+    if (versionElement) {
+	const manifest = chrome.runtime.getManifest();
+	if (manifest && manifest.version) {
+	    versionElement.textContent = manifest.version;
+	}
+    }
+    
+    // Handle login button
+    const loginButton = document.getElementById('loginButton');
+    const loginNameInput = document.getElementById('loginName');
+    const loginPasswordInput = document.getElementById('loginPassword');
+    
+    if (loginButton) {
+	// Load saved login credentials
+	chrome.storage.local.get(['loginName', 'loginPassword'], function(result) {
+	    if (result.loginName) {
+		loginNameInput.value = result.loginName;
+	    }
+	    if (result.loginPassword) {
+		loginPasswordInput.value = result.loginPassword;
+	    }
+	});
+	
+	loginButton.addEventListener('click', function() {
+	    const name = loginNameInput.value.trim();
+	    const password = loginPasswordInput.value.trim();
+	    
+	    if (!name || !password) {
+		return;
+	    }
+	    
+	    // Save login credentials
+	    chrome.storage.local.set({
+		loginName: name,
+		loginPassword: password
+	    }, function() {
+		loginButton.textContent = '✓ Zapisano';
+		loginButton.classList.remove('btn-primary');
+		loginButton.classList.add('btn-success');
+		setTimeout(function() {
+		    loginButton.textContent = 'Zaloguj';
+		    loginButton.classList.remove('btn-success');
+		    loginButton.classList.add('btn-primary');
 		}, 2000);
 	    });
 	});
@@ -82,7 +396,6 @@ document.addEventListener('DOMContentLoaded', function () {
     if (selectButton) {
         // Add a click event listener
         selectButton.addEventListener('click', () => {
-            console.log('The "Wypełnij" button was clicked!');
             // Add your custom logic here
 	    const userSubmitsDropdown = document.getElementById('userSubmits');
             const selectedValue = userSubmitsDropdown.value;
@@ -95,8 +408,6 @@ document.addEventListener('DOMContentLoaded', function () {
                 const eventDetails = eventResults[selectedValue];
 
                 if (eventDetails) {
-                    console.log('Event Details:', eventDetails);
-
 		    const form = document.getElementById('endux-form');
 		    if (form) {
 			// Iterate over the form's input fields
@@ -136,68 +447,28 @@ document.addEventListener('DOMContentLoaded', function () {
 				saveToStorage(fieldName, select.value);
 			    }
 			});
+			
+			// Show toast message
+			showToast('✅ Formularz został wypełniony', 'success');
+			
+			// Switch to "Zgłoszenie" tab
+			const noweTab = document.getElementById('nowe-tab');
+			if (noweTab) {
+			    // Use Bootstrap Tab API or trigger click
+			    if (typeof bootstrap !== 'undefined' && bootstrap.Tab) {
+				const tab = new bootstrap.Tab(noweTab);
+				tab.show();
+			    } else {
+				// Fallback: trigger click on the tab
+				noweTab.click();
+			    }
+			}
 		    }
 		};
             });
 	});
     }
 
-    const fromListPane = document.getElementById('from-list-tab');
-
-    if (fromListPane) {
-        fromListPane.addEventListener('click', () => {
-            console.log('Tab pane "fromlist" was clicked!');
-            // Perform your action here
-	    handleUserEvents();
-        });
-    }
-    
-    responseMessage.textContent = 'Loading form... Please wait.';
-    // Fetch the form from the URL
-    fetch('https://dev.enduhub.com/pl/submit/endux/')
-        .then(response => {
-            if (!response.ok) {
-                throw new Error('Network response was not ok');
-            }
-            return response.text(); // Parse the response as text (HTML)
-        })
-        .then(html => {
-            // Create a temporary DOM element to parse the HTML content
-            const tempDiv = document.createElement('div');
-            tempDiv.innerHTML = html;
-
-            // Extract the <form> element from the fetched HTML
-            const form = tempDiv.querySelector('form');
-            if (form) {
-                // Append the form to the container in popup.html
-                document.getElementById('formContainer').appendChild(form);
-		form.addEventListener('submit', handleFormSubmit);
-		form.addEventListener('input', handleFormInput);
-		
-		const formFields = document.querySelectorAll('#endux-form input, #endux-form textarea, #endux-form select');
-
-		// Loop through all form fields and populate with stored values if available
-		formFields.forEach(function(field) {
-		    const fieldName = field.name; // Get the field's name attribute
-		    
-		    // Retrieve saved data from Chrome storage
-		    chrome.storage.local.get([fieldName], function(result) {
-			// If the field's value is found in storage, set it to the field
-			if (result[fieldName]) {
-			    field.value = result[fieldName];
-			}
-		    });
-		});
-
-		responseMessage.textContent = '';
-            } else {
-                console.error('Form element not found in the response');
-            }
-        })
-        .catch(error => {
-            console.error('Error fetching form:', error);
-            document.getElementById('responseMessage').textContent = 'Failed to load form.';
-        });
 });
 
 function handleUserEvents() {
@@ -234,17 +505,18 @@ function handleUserEvents() {
 		return acc;
 	    }, {});
 
-	    console.log(indexedEvents);
-
 	    // Save the indexed results to Chrome storage
 	    chrome.storage.local.set({ eventsById: indexedEvents }, () => {
-		console.log('Results indexed by ID saved successfully!');
 	    });
 
-	    document.getElementById('responseMessage').textContent = "Pobrano: "+events.length;
+	    const msg = document.getElementById('responseMessage');
+	    msg.textContent = '';
+	    msg.style.display = 'none';
 	})
 	.catch((error) => {
-            document.getElementById('responseMessage').textContent = error;
+            const msg = document.getElementById('responseMessage');
+            msg.textContent = error;
+            msg.style.display = '';
             console.error('Error:', error);  // Log any errors
 	});
 };
@@ -256,7 +528,17 @@ function handleFormInput(event) {
 
     // Check if the target is an input or textarea or select element
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') {
-        saveToStorage(target.name, target.value);
+	// Skip CSRF token
+	if (target.name === 'csrfmiddlewaretoken') {
+	    return;
+	}
+	
+	// Handle checkbox differently
+	if (target.type === 'checkbox') {
+	    saveToStorage(target.name, target.checked);
+	} else {
+	    saveToStorage(target.name, target.value);
+	}
     }
 };
 
@@ -267,7 +549,6 @@ function saveToStorage(key, value) {
     
     // Save the data to Chrome local storage
     chrome.storage.local.set(data, function() {
-        console.log(`Saved ${key}: ${value}`);
     });
 }
 
@@ -342,17 +623,21 @@ function handleFormSubmit(event) {
 	    })
 		.then(response => response.json())
 		.then(data => {
-		    document.getElementById('responseMessage').textContent = data.message
-		    console.log(data);  // Log server response
+		    const msg = document.getElementById('responseMessage');
+		    msg.textContent = data.message;
+		    msg.style.display = '';
 		    document.getElementById('formContainer').innerHTML = '';
 		})
 		.catch((error) => {
-		    document.getElementById('responseMessage').textContent = 'There was an error sending the form.';
-		    document.getElementById('responseMessage').textContent = response
+		    const msg = document.getElementById('responseMessage');
+		    msg.textContent = 'There was an error sending the form.';
+		    msg.style.display = '';
 		    console.error('Error:', error);  // Log any errors
 		});
 	} else {
-	    document.getElementById('responseMessage').textContent = 'Failed to retrieve page source.';
+	    const msg = document.getElementById('responseMessage');
+	    msg.textContent = 'Failed to retrieve page source.';
+	    msg.style.display = '';
 	}
     });
 };

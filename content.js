@@ -10,6 +10,23 @@ function createHash(text) {
     return Math.abs(hash).toString(36);
 }
 
+// Function to extract plain text from HTML element, removing all HTML tags
+function getPlainText(element) {
+    if (!element) return '';
+    
+    // Create a temporary element to extract text
+    const temp = document.createElement('div');
+    temp.innerHTML = element.innerHTML;
+    
+    // Get text content (this removes all HTML tags)
+    let text = temp.textContent || temp.innerText || '';
+    
+    // Clean up: replace multiple whitespaces with single space, remove leading/trailing whitespace
+    text = text.replace(/\s+/g, ' ').trim();
+    
+    return text;
+}
+
 // Global function to update all clipboard info elements on the page
 function updateAllClipboardInfo() {
     chrome.storage.local.get(['accumulatedClipboard'], function(result) {
@@ -56,7 +73,11 @@ function openClipboardInNewTab() {
 		}
 		
 		if (response && response.success) {
-		    showToast('✅ Zawartość schowka otwarta w nowej zakładce', 'success');
+		    if (response.reloaded) {
+			showToast('✅ Przełączono na zakładkę schowka i przeładowano', 'success');
+		    } else {
+			showToast('✅ Zawartość schowka otwarta w nowej zakładce', 'success');
+		    }
 		} else {
 		    const errorMsg = response && response.message ? response.message : 'Nie udało się otworzyć zawartości schowka';
 		    showToast('❌ ' + errorMsg, 'error');
@@ -154,7 +175,7 @@ function copyTableToClipboard(table, includeHeader, append = false) {
 	    const cells = [];
 	    
 	    for (let j = 0; j < row.cells.length; j++) {
-		cells.push(row.cells[j].innerText.trim());
+		cells.push(getPlainText(row.cells[j]));
 	    }
 	    
 	    tableText += cells.join('\t') + '\n';
@@ -166,9 +187,9 @@ function copyTableToClipboard(table, includeHeader, append = false) {
 	const row = bodyRows[i];
 	const cells = [];
 	
-	// Extract cell text from each cell in the row
+	// Extract cell text from each cell in the row (removing all HTML tags)
 	for (let j = 0; j < row.cells.length; j++) {
-	    cells.push(row.cells[j].innerText.trim());
+	    cells.push(getPlainText(row.cells[j]));
 	}
 	
 	// Join cells with tab separator (works well for pasting into spreadsheets)
@@ -184,8 +205,21 @@ function copyTableToClipboard(table, includeHeader, append = false) {
 	currentRowCount += theadRows.length;
     }
     
-    // Create hash for the table text
-    const tableHash = createHash(tableText);
+    // Create hash for the table text - ALWAYS use only body rows (without header) for hash
+    // This ensures the same table is detected as duplicate regardless of includeHeader setting
+    let hashText = '';
+    for (let i = 0; i < bodyRows.length; i++) {
+	const row = bodyRows[i];
+	const cells = [];
+	
+	for (let j = 0; j < row.cells.length; j++) {
+	    cells.push(getPlainText(row.cells[j]));
+	}
+	
+	hashText += cells.join('\t') + '\n';
+    }
+    hashText = hashText.replace(/\n$/, '');
+    const tableHash = createHash(hashText);
     
     // If append mode, get existing clipboard content from storage
     if (append) {
@@ -274,21 +308,123 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
 	    // Use preference if includeHeader is not explicitly set
 	    const includeHeader = request.includeHeader !== undefined ? request.includeHeader : (result.includeHeaderPreference || false);
 	    
-	    // Find the nearest table (prefer visible tables near the top of viewport)
+	    // Find the best table to copy
 	    const tables = document.querySelectorAll('table');
 	    let targetTable = null;
 	    
 	    if (tables.length > 0) {
-		// Find the first visible table in the viewport, or the first table on the page
-		for (let i = 0; i < tables.length; i++) {
-		    const rect = tables[i].getBoundingClientRect();
-		    if (rect.top >= 0 && rect.top < window.innerHeight) {
-			targetTable = tables[i];
-			break;
+		// If click coordinates are provided (from context menu), use them to find the closest table
+		if (request.clickX !== undefined && request.clickY !== undefined) {
+		    const clickX = request.clickX;
+		    const clickY = request.clickY;
+		    let closestTable = null;
+		    let closestDistance = Infinity;
+		    
+		    for (let i = 0; i < tables.length; i++) {
+			const rect = tables[i].getBoundingClientRect();
+			// Check if click is within table bounds (accounting for scroll)
+			const scrollX = window.scrollX || window.pageXOffset;
+			const scrollY = window.scrollY || window.pageYOffset;
+			const tableLeft = rect.left + scrollX;
+			const tableTop = rect.top + scrollY;
+			const tableRight = tableLeft + rect.width;
+			const tableBottom = tableTop + rect.height;
+			
+			// If click is inside table, use it
+			if (clickX >= tableLeft && clickX <= tableRight && clickY >= tableTop && clickY <= tableBottom) {
+			    targetTable = tables[i];
+			    break;
+			}
+			
+			// Otherwise, calculate distance to table center
+			const tableCenterX = tableLeft + (rect.width / 2);
+			const tableCenterY = tableTop + (rect.height / 2);
+			const distance = Math.sqrt(Math.pow(clickX - tableCenterX, 2) + Math.pow(clickY - tableCenterY, 2));
+			
+			if (distance < closestDistance) {
+			    closestDistance = distance;
+			    closestTable = tables[i];
+			}
+		    }
+		    
+		    // Use closest table if no table contains the click
+		    if (!targetTable && closestTable) {
+			targetTable = closestTable;
 		    }
 		}
 		
-		// If no table in viewport, use the first table
+		// If no table found yet, try to find table based on selection or active element
+		if (!targetTable) {
+		    const selection = window.getSelection();
+		    const activeElement = document.activeElement;
+		    
+		    // If there's a text selection, try to find table containing it
+		    if (selection && selection.rangeCount > 0) {
+			const range = selection.getRangeAt(0);
+			let node = range.commonAncestorContainer;
+			
+			// Walk up the DOM tree to find a table
+			while (node && node.nodeType !== Node.ELEMENT_NODE) {
+			    node = node.parentNode;
+			}
+			
+			while (node && node.tagName !== 'TABLE') {
+			    node = node.parentElement;
+			}
+			
+			if (node && node.tagName === 'TABLE') {
+			    targetTable = node;
+			}
+		    }
+		    
+		    // If no table from selection, try active element
+		    if (!targetTable && activeElement) {
+			let node = activeElement;
+			while (node && node.tagName !== 'TABLE') {
+			    node = node.parentElement;
+			}
+			if (node && node.tagName === 'TABLE') {
+			    targetTable = node;
+			}
+		    }
+		}
+		
+		// If still no table, find the table closest to center of viewport
+		if (!targetTable) {
+		    const viewportCenter = window.innerHeight / 2;
+		    let closestTable = null;
+		    let closestDistance = Infinity;
+		    
+		    for (let i = 0; i < tables.length; i++) {
+			const rect = tables[i].getBoundingClientRect();
+			// Check if table is visible in viewport
+			if (rect.top < window.innerHeight && rect.bottom > 0) {
+			    // Calculate distance from viewport center
+			    const tableCenter = rect.top + (rect.height / 2);
+			    const distance = Math.abs(tableCenter - viewportCenter);
+			    
+			    if (distance < closestDistance) {
+				closestDistance = distance;
+				closestTable = tables[i];
+			    }
+			}
+		    }
+		    
+		    targetTable = closestTable;
+		}
+		
+		// Fallback: use first visible table in viewport
+		if (!targetTable) {
+		    for (let i = 0; i < tables.length; i++) {
+			const rect = tables[i].getBoundingClientRect();
+			if (rect.top >= 0 && rect.top < window.innerHeight) {
+			    targetTable = tables[i];
+			    break;
+			}
+		    }
+		}
+		
+		// Last resort: use the first table on the page
 		if (!targetTable && tables.length > 0) {
 		    targetTable = tables[0];
 		}
@@ -526,6 +662,134 @@ window.addEventListener('load', function() {
 	    // Insert the container above the table
 	    table.parentNode.insertBefore(container, table);
 	    
+	    // Clone container for below the table
+	    const containerBelow = container.cloneNode(true);
+	    
+	    // Update margin for bottom container (no bottom margin needed)
+	    containerBelow.style.marginBottom = '0';
+	    containerBelow.style.marginTop = '15px';
+	    
+	    // Get cloned elements from bottom container
+	    const buttonBelow = containerBelow.querySelector('button');
+	    const checkboxBelow = containerBelow.querySelector('input[type="checkbox"]:first-of-type');
+	    const appendCheckboxBelow = containerBelow.querySelectorAll('input[type="checkbox"]')[1];
+	    const clipboardInfoBelow = containerBelow.querySelector('span[id^="clipboard-info-"]');
+	    const clearButtonBelow = containerBelow.querySelector('button[title="Wyczyść schowek"]');
+	    
+	    // Update clipboard info ID for bottom container to be unique
+	    if (clipboardInfoBelow) {
+		clipboardInfoBelow.id = 'clipboard-info-' + Math.random().toString(36).substr(2, 9);
+		// Re-add click event for bottom clipboard info
+		clipboardInfoBelow.addEventListener('click', function(e) {
+		    e.stopPropagation();
+		    openClipboardInNewTab();
+		});
+		// Re-add hover effects
+		clipboardInfoBelow.addEventListener('mouseenter', function() {
+		    clipboardInfoBelow.style.color = '#007bff';
+		});
+		clipboardInfoBelow.addEventListener('mouseleave', function() {
+		    clipboardInfoBelow.style.color = '#6c757d';
+		});
+	    }
+	    
+	    // Re-add clear button event for bottom container
+	    if (clearButtonBelow) {
+		clearButtonBelow.addEventListener('click', function(e) {
+		    e.stopPropagation();
+		    chrome.storage.local.remove(['accumulatedClipboard', 'clipboardHashes'], function() {
+			updateAllClipboardInfo();
+			showToast('🗑️ Schowek wyczyszczony', 'success');
+		    });
+		});
+		// Re-add hover effects
+		clearButtonBelow.addEventListener('mouseenter', function() {
+		    clearButtonBelow.style.opacity = '1';
+		});
+		clearButtonBelow.addEventListener('mouseleave', function() {
+		    clearButtonBelow.style.opacity = '0.6';
+		});
+	    }
+	    
+	    // Sync checkbox states between top and bottom containers
+	    if (checkboxBelow) {
+		checkboxBelow.addEventListener('change', function() {
+		    checkbox.checked = checkboxBelow.checked;
+		    chrome.storage.local.set({ includeHeaderPreference: checkboxBelow.checked });
+		});
+		checkbox.addEventListener('change', function() {
+		    checkboxBelow.checked = checkbox.checked;
+		});
+	    }
+	    
+	    if (appendCheckboxBelow) {
+		appendCheckboxBelow.addEventListener('change', function() {
+		    appendCheckbox.checked = appendCheckboxBelow.checked;
+		});
+		appendCheckbox.addEventListener('change', function() {
+		    appendCheckboxBelow.checked = appendCheckbox.checked;
+		});
+	    }
+	    
+	    // Add click event for bottom button
+	    if (buttonBelow) {
+		buttonBelow.addEventListener('click', function() {
+		    // Get the table that precedes this container
+		    const tableForBottom = containerBelow.previousElementSibling;
+		    
+		    if (tableForBottom && tableForBottom.tagName === 'TABLE') {
+			// Check if header should be included (use checkbox from bottom container)
+			const includeHeader = checkboxBelow ? checkboxBelow.checked : checkbox.checked;
+			const append = appendCheckboxBelow ? appendCheckboxBelow.checked : appendCheckbox.checked;
+			
+			// Use the shared copy function
+			copyTableToClipboard(tableForBottom, includeHeader, append).then(function(result) {
+			    if (result.success) {
+				const message = append ? '📋 Tabela dołączona do schowka' : '📋 Tabela skopiowana do schowka';
+				showToast(message, 'success', result.rowCount);
+				// Update all clipboard info elements after copying
+				updateAllClipboardInfo();
+			    } else {
+				// Don't show error toast if it's a duplicate (warning already shown)
+				if (!result.isDuplicate) {
+				    showToast('❌ Nie udało się skopiować tabeli', 'error');
+				}
+			    }
+			});
+		    }
+		});
+		
+		// Re-add hover effects for bottom button
+		buttonBelow.addEventListener('mouseenter', function() {
+		    buttonBelow.style.backgroundColor = '#0056b3';
+		    buttonBelow.style.boxShadow = '0 4px 8px rgba(0, 123, 255, 0.3)';
+		    buttonBelow.style.transform = 'translateY(-1px)';
+		});
+		
+		buttonBelow.addEventListener('mouseleave', function() {
+		    buttonBelow.style.backgroundColor = '#007bff';
+		    buttonBelow.style.boxShadow = '0 2px 4px rgba(0, 123, 255, 0.2)';
+		    buttonBelow.style.transform = 'translateY(0)';
+		});
+		
+		buttonBelow.addEventListener('mousedown', function() {
+		    buttonBelow.style.transform = 'translateY(0)';
+		    buttonBelow.style.boxShadow = '0 1px 2px rgba(0, 123, 255, 0.2)';
+		});
+		
+		buttonBelow.addEventListener('mouseup', function() {
+		    buttonBelow.style.transform = 'translateY(-1px)';
+		    buttonBelow.style.boxShadow = '0 4px 8px rgba(0, 123, 255, 0.3)';
+		});
+	    }
+	    
+	    // Insert the container below the table
+	    if (table.nextSibling) {
+		table.parentNode.insertBefore(containerBelow, table.nextSibling);
+	    } else {
+		table.parentNode.appendChild(containerBelow);
+	    }
+	    
 	    button.addEventListener('click', function() {
 		// Get the table that follows this container
 		const table = container.nextElementSibling;
@@ -554,4 +818,113 @@ window.addEventListener('load', function() {
 	});
 	}); // Close chrome.storage.local.get callback
     },2000);
+    
+    // Detect AJAX pagination
+    let lastAjaxToastTime = 0;
+    const AJAX_TOAST_COOLDOWN = 2000; // Show toast max once per 2 seconds
+    
+    // Intercept fetch requests
+    const originalFetch = window.fetch;
+    window.fetch = function(...args) {
+	const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
+	const isPaginationRequest = url.includes('page') || 
+				     url.includes('pagination') || 
+				     url.includes('ajax') ||
+				     (args[1] && args[1].method && args[1].method.toUpperCase() !== 'GET' && url.includes('table'));
+	
+	if (isPaginationRequest) {
+	    const now = Date.now();
+	    if (now - lastAjaxToastTime > AJAX_TOAST_COOLDOWN) {
+		setTimeout(function() {
+		    showToast('✅ Następna strona załadowana', 'success');
+		    lastAjaxToastTime = Date.now();
+		}, 1000);
+	    }
+	}
+	
+	return originalFetch.apply(this, args);
+    };
+    
+    // Intercept XMLHttpRequest
+    const originalXHROpen = XMLHttpRequest.prototype.open;
+    const originalXHRSend = XMLHttpRequest.prototype.send;
+    
+    XMLHttpRequest.prototype.open = function(method, url, ...args) {
+	this._enduxUrl = url;
+	this._enduxMethod = method;
+	return originalXHROpen.apply(this, [method, url, ...args]);
+    };
+    
+    XMLHttpRequest.prototype.send = function(...args) {
+	const url = this._enduxUrl || '';
+	const method = this._enduxMethod || 'GET';
+	const isPaginationRequest = url.includes('page') || 
+				     url.includes('pagination') || 
+				     url.includes('ajax') ||
+				     (method.toUpperCase() !== 'GET' && url.includes('table'));
+	
+	if (isPaginationRequest) {
+	    const now = Date.now();
+	    if (now - lastAjaxToastTime > AJAX_TOAST_COOLDOWN) {
+		setTimeout(function() {
+		    showToast('✅ Następna strona załadowana', 'success');
+		    lastAjaxToastTime = Date.now();
+		}, 1000);
+	    }
+	}
+	
+	return originalXHRSend.apply(this, args);
+    };
+    
+    // Monitor DOM changes for table updates (AJAX pagination indicator)
+    const observer = new MutationObserver(function(mutations) {
+	let tableChanged = false;
+	
+	mutations.forEach(function(mutation) {
+	    if (mutation.type === 'childList') {
+		mutation.addedNodes.forEach(function(node) {
+		    if (node.nodeType === Node.ELEMENT_NODE) {
+			// Check if a table was added or if added node contains tables
+			if (node.tagName === 'TABLE' || (node.querySelector && node.querySelector('table'))) {
+			    tableChanged = true;
+			}
+			// Check for pagination indicators
+			if (node.classList && (
+			    node.classList.contains('pagination') ||
+			    node.classList.contains('pager') ||
+			    node.classList.contains('page') ||
+			    node.id && node.id.includes('page')
+			)) {
+			    tableChanged = true;
+			}
+		    }
+		});
+		
+		// Check if table rows were added/removed
+		if (mutation.target && mutation.target.tagName === 'TABLE') {
+		    tableChanged = true;
+		}
+		if (mutation.target && mutation.target.tagName === 'TBODY') {
+		    tableChanged = true;
+		}
+	    }
+	});
+	
+	if (tableChanged) {
+	    // Check if this looks like AJAX pagination (table changed but no page reload)
+	    const now = Date.now();
+	    if (now - lastAjaxToastTime > AJAX_TOAST_COOLDOWN) {
+		setTimeout(function() {
+		    showToast('✅ Następna strona załadowana', 'success');
+		    lastAjaxToastTime = Date.now();
+		}, 500);
+	    }
+	}
+    });
+    
+    // Start observing DOM changes
+    observer.observe(document.body, {
+	childList: true,
+	subtree: true
+    });
 });

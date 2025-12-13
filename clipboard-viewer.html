@@ -54,6 +54,27 @@
         .data-table tr:hover {
             background-color: #e7f3ff;
         }
+        .data-table tr.header-row {
+            background-color: #007bff !important;
+            color: white;
+            font-weight: 700;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        .data-table tr.header-row:hover {
+            background-color: #0056b3 !important;
+        }
+        .data-table tr.header-row td {
+            background-color: #007bff !important;
+            color: white;
+            border-color: #0056b3;
+            font-weight: 700;
+        }
+        .data-table tr.header-row td.row-number {
+            background-color: #0056b3 !important;
+            color: white;
+        }
         .data-table td.row-number {
             font-weight: 600;
             color: #495057;

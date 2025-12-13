@@ -1,7 +1,8 @@
 {
     "manifest_version": 3,
     "name": "EnduX",
-    "version": "1.0",
+    "version": "1.0.0",
+    "description": "Rozszerzenie do kopiowania i zarządzania tabelami wyników",
     "icons": {
 	"16": "images/icon16.png",
 	"48": "images/icon48.png",
@@ -11,14 +12,16 @@
 	"activeTab",
 	"storage",
 	"contextMenus",
-	"scripting"
+	"scripting",
+	"tabs"
 	//"https://*.*"
     ],
     "host_permissions": [
 	"http://localhost/*",  // Allow interaction with localhost URLs
 	"https://localhost/*",  // Allow interaction with secure localhost URLs
 	"https://enduhub.com/*",  // Allow interaction enduhub endpoint
-	"https://dev.enduhub.com/*"  // Allow interaction enduhub dev endpoint
+	"https://dev.enduhub.com/*",  // Allow interaction enduhub dev endpoint
+	"https://p3.enduhub.com/*"  // Allow interaction enduhub p3 endpoint
     ],
     "background": {
 	"service_worker": "background.js"
