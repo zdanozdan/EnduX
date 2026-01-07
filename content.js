@@ -42,6 +42,91 @@ function updateAllClipboardInfo() {
     });
 }
 
+// Function to handle Crawler Step
+async function handleCrawlerStep() {
+    console.log('EnduX Crawler: Sprawdzanie stanu...');
+    // Check if crawler is active and has class defined
+    const result = await new Promise(resolve => {
+        chrome.storage.local.get(['crawlerActive', 'crawlerClass', 'includeHeaderPreference', 'extensionEnabled'], resolve);
+    });
+
+    if (!result.extensionEnabled || !result.crawlerActive || !result.crawlerClass) {
+        console.log('EnduX Crawler: Crawler nie jest aktywny.');
+        return;
+    }
+
+    console.log('EnduX Crawler: Próba znalezienia tabeli...');
+    // Find the best table to copy
+    const tables = document.querySelectorAll('table');
+    let targetTable = null;
+    let maxRows = 0;
+    
+    tables.forEach(t => {
+        if (t.rows.length > maxRows && t.offsetParent !== null) {
+            maxRows = t.rows.length;
+            targetTable = t;
+        }
+    });
+
+    if (targetTable) {
+        console.log('EnduX Crawler: Znaleziono tabelę, kopiowanie...');
+        const includeHeader = result.includeHeaderPreference || false;
+        
+        // COPY AND WAIT (Sequential)
+        const copyResult = await copyTableToClipboard(targetTable, includeHeader, true);
+        
+        if (copyResult.success) {
+            console.log('EnduX Crawler: Dane zapisane pomyślnie.');
+            showToast('🚀 Crawler: Dane zapisane', 'success', copyResult.rowCount);
+            updateAllClipboardInfo();
+
+            // Find "Next" button
+            let className = result.crawlerClass.trim();
+            if (!className.startsWith('.') && !className.startsWith('#')) {
+                // Handle multiple classes like "btn next" -> ".btn.next"
+                className = '.' + className.replace(/\s+/g, '.');
+            }
+            
+            const nextButton = document.querySelector(className);
+            console.log('EnduX Crawler: Przycisk Dalej (', className, '):', nextButton);
+            
+            const canGoNext = nextButton && 
+                             !nextButton.classList.contains('disabled') && 
+                             !nextButton.hasAttribute('disabled') &&
+                             nextButton.offsetParent !== null;
+
+            if (canGoNext) {
+                console.log('EnduX Crawler: Przechodzenie do następnej strony za 2 sekundy...');
+                // Wait 2 seconds before clicking
+                setTimeout(() => {
+                    // Check if still active
+                    chrome.storage.local.get(['crawlerActive'], function(res) {
+                        if (res.crawlerActive) {
+                            console.log('EnduX Crawler: Kliknięcie!');
+                            nextButton.click();
+                            // Handle cases where <a> needs extra nudge
+                            if (nextButton.tagName === 'A' && nextButton.href && !nextButton.href.startsWith('javascript')) {
+                                // Sometimes simple click() isn't enough for <a>
+                                nextButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                            }
+                        }
+                    });
+                }, 2000);
+            } else {
+                console.log('EnduX Crawler: Brak aktywnego przycisku Dalej.');
+                chrome.storage.local.set({ crawlerActive: false });
+                showToast('🏁 Crawler: Koniec danych lub nie znaleziono przycisku', 'success');
+            }
+        } else if (copyResult.isDuplicate) {
+            console.log('EnduX Crawler: Wykryto duplikat, zatrzymywanie.');
+            chrome.storage.local.set({ crawlerActive: false });
+            showToast('⚠️ Crawler: Wykryto duplikaty, zatrzymano.', 'warning');
+        }
+    } else {
+        console.log('EnduX Crawler: Nie znaleziono tabeli na tej stronie.');
+    }
+}
+
 // Function to open clipboard content in a new tab
 function openClipboardInNewTab() {
     try {
@@ -228,7 +313,7 @@ function copyTableToClipboard(table, includeHeader, append = false) {
 		const existingContent = result.accumulatedClipboard || '';
 		const preventDuplicates = result.preventDuplicates === undefined ? true : result.preventDuplicates;
 		const existingHashes = result.clipboardHashes || [];
-		
+		    
 		// Check for duplicates using hash if option is enabled
 		if (preventDuplicates && tableHash) {
 		    if (existingHashes.includes(tableHash)) {
@@ -254,13 +339,16 @@ function copyTableToClipboard(table, includeHeader, append = false) {
 		    accumulatedClipboard: combinedText,
 		    clipboardHashes: updatedHashes
 		}, function() {
-		    // Copy to clipboard
-		    navigator.clipboard.writeText(combinedText).then(function() {
-			resolve({ success: true, rowCount: totalRowCount });
-		    }).catch(function(err) {
-			console.error('Failed to copy: ', err);
-			resolve({ success: false, rowCount: null });
-		    });
+		    // Try to copy to clipboard, but don't fail if it's blocked
+		    navigator.clipboard.writeText(combinedText)
+			.then(function() {
+			    resolve({ success: true, rowCount: totalRowCount });
+			})
+			.catch(function(err) {
+			    console.warn('EnduX: Systemowy schowek zablokowany (brak fokusu), ale dane zapisano w pamięci rozszerzenia.', err);
+			    // Resolve with success anyway because data is in storage!
+			    resolve({ success: true, rowCount: totalRowCount, clipboardError: true });
+			});
 		});
 	    });
 	});
@@ -273,12 +361,14 @@ function copyTableToClipboard(table, includeHeader, append = false) {
 		accumulatedClipboard: tableTextWithNewline,
 		clipboardHashes: [tableHash]  // Start new hash list with this table
 	    }, function() {
-		navigator.clipboard.writeText(tableTextWithNewline).then(function() {
-		    resolve({ success: true, rowCount: currentRowCount });
-		}).catch(function(err) {
-		    console.error('Failed to copy: ', err);
-		    resolve({ success: false, rowCount: null });
-		});
+		navigator.clipboard.writeText(tableTextWithNewline)
+		    .then(function() {
+			resolve({ success: true, rowCount: currentRowCount });
+		    })
+		    .catch(function(err) {
+			console.warn('EnduX: Systemowy schowek zablokowany, dane zapisano w pamięci rozszerzenia.', err);
+			resolve({ success: true, rowCount: currentRowCount, clipboardError: true });
+		    });
 	    });
 	});
     }
@@ -295,6 +385,9 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
 	// Update clipboard info on this page
 	updateAllClipboardInfo();
 	sendResponse({ success: true });
+    } else if (request.action === 'startCrawler') {
+        handleCrawlerStep();
+        sendResponse({ success: true });
     } else if (request.action === 'copyTable') {
 	// Check if extension is enabled
 	chrome.storage.local.get(['extensionEnabled', 'includeHeaderPreference'], function(result) {
@@ -415,11 +508,11 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
 		
 		// Fallback: use first visible table in viewport
 		if (!targetTable) {
-		    for (let i = 0; i < tables.length; i++) {
-			const rect = tables[i].getBoundingClientRect();
-			if (rect.top >= 0 && rect.top < window.innerHeight) {
-			    targetTable = tables[i];
-			    break;
+		for (let i = 0; i < tables.length; i++) {
+		    const rect = tables[i].getBoundingClientRect();
+		    if (rect.top >= 0 && rect.top < window.innerHeight) {
+			targetTable = tables[i];
+			break;
 			}
 		    }
 		}
@@ -733,17 +826,24 @@ window.addEventListener('load', function() {
 	    
 	    // Add click event for bottom button
 	    if (buttonBelow) {
-		buttonBelow.addEventListener('click', function() {
-		    // Get the table that precedes this container
-		    const tableForBottom = containerBelow.previousElementSibling;
+		buttonBelow.addEventListener('click', async function() {
+		    // Disable button for sequentiality
+		    buttonBelow.disabled = true;
+		    const originalText = buttonBelow.textContent;
+		    buttonBelow.textContent = '⏳ Czekaj...';
 		    
-		    if (tableForBottom && tableForBottom.tagName === 'TABLE') {
-			// Check if header should be included (use checkbox from bottom container)
-			const includeHeader = checkboxBelow ? checkboxBelow.checked : checkbox.checked;
-			const append = appendCheckboxBelow ? appendCheckboxBelow.checked : appendCheckbox.checked;
+		    try {
+			// Get the table that precedes this container
+			const tableForBottom = containerBelow.previousElementSibling;
 			
-			// Use the shared copy function
-			copyTableToClipboard(tableForBottom, includeHeader, append).then(function(result) {
+			if (tableForBottom && tableForBottom.tagName === 'TABLE') {
+			    // Check if header should be included (use checkbox from bottom container)
+			    const includeHeader = checkboxBelow ? checkboxBelow.checked : checkbox.checked;
+			    const append = appendCheckboxBelow ? appendCheckboxBelow.checked : appendCheckbox.checked;
+			    
+			    // Use the shared copy function (WAIT for completion)
+			    const result = await copyTableToClipboard(tableForBottom, includeHeader, append);
+			    
 			    if (result.success) {
 				const message = append ? '📋 Tabela dołączona do schowka' : '📋 Tabela skopiowana do schowka';
 				showToast(message, 'success', result.rowCount);
@@ -755,7 +855,11 @@ window.addEventListener('load', function() {
 				    showToast('❌ Nie udało się skopiować tabeli', 'error');
 				}
 			    }
-			});
+			}
+		    } finally {
+			// Re-enable button
+			buttonBelow.disabled = false;
+			buttonBelow.textContent = originalText;
 		    }
 		});
 		
@@ -790,17 +894,24 @@ window.addEventListener('load', function() {
 		table.parentNode.appendChild(containerBelow);
 	    }
 	    
-	    button.addEventListener('click', function() {
-		// Get the table that follows this container
-		const table = container.nextElementSibling;
+	    button.addEventListener('click', async function() {
+		// Disable button for sequentiality
+		button.disabled = true;
+		const originalText = button.textContent;
+		button.textContent = '⏳ Czekaj...';
 		
-		if (table && table.tagName === 'TABLE') {
-		    // Check if header should be included
-		    const includeHeader = checkbox.checked;
-		    const append = appendCheckbox.checked; // Get append mode
+		try {
+		    // Get the table that follows this container
+		    const table = container.nextElementSibling;
 		    
-		    // Use the shared copy function
-		    copyTableToClipboard(table, includeHeader, append).then(function(result) {
+		    if (table && table.tagName === 'TABLE') {
+			// Check if header should be included
+			const includeHeader = checkbox.checked;
+			const append = appendCheckbox.checked; // Get append mode
+			
+			// Use the shared copy function (WAIT for completion)
+			const result = await copyTableToClipboard(table, includeHeader, append);
+			
 			if (result.success) {
 			    const message = append ? '📋 Tabela dołączona do schowka' : '📋 Tabela skopiowana do schowka';
 			    showToast(message, 'success', result.rowCount);
@@ -812,7 +923,11 @@ window.addEventListener('load', function() {
 				showToast('❌ Nie udało się skopiować tabeli', 'error');
 			    }
 			}
-		    });
+		    }
+		} finally {
+		    // Re-enable button
+		    button.disabled = false;
+		    button.textContent = originalText;
 		}
 	    });
 	});
@@ -823,6 +938,15 @@ window.addEventListener('load', function() {
     let lastAjaxToastTime = 0;
     const AJAX_TOAST_COOLDOWN = 2000; // Show toast max once per 2 seconds
     
+    // Check if crawler should run on initial load
+    setTimeout(() => {
+        chrome.storage.local.get(['crawlerActive'], function(res) {
+            if (res.crawlerActive) {
+                handleCrawlerStep();
+            }
+        });
+    }, 2500);
+
     // Intercept fetch requests
     const originalFetch = window.fetch;
     window.fetch = function(...args) {
@@ -836,7 +960,35 @@ window.addEventListener('load', function() {
 	    const now = Date.now();
 	    if (now - lastAjaxToastTime > AJAX_TOAST_COOLDOWN) {
 		setTimeout(function() {
-		    showToast('✅ Następna strona załadowana', 'success');
+		    chrome.storage.local.get(['autoAppend', 'crawlerActive', 'includeHeaderPreference'], function(result) {
+			if (result.crawlerActive) {
+			    handleCrawlerStep();
+			} else if (result.autoAppend) {
+			    // Find the best table to copy
+			    const tables = document.querySelectorAll('table');
+			    let targetTable = null;
+			    let maxRows = 0;
+			    
+			    tables.forEach(t => {
+				if (t.rows.length > maxRows && t.offsetParent !== null) {
+				    maxRows = t.rows.length;
+				    targetTable = t;
+				}
+			    });
+
+			    if (targetTable) {
+				const includeHeader = result.includeHeaderPreference || false;
+				copyTableToClipboard(targetTable, includeHeader, true).then(res => {
+				    if (res.success) {
+					showToast('✅ Automatycznie dołączono nowe dane', 'success', res.rowCount);
+					updateAllClipboardInfo();
+				    }
+				});
+			    }
+			} else {
+			    showToast('✅ Następna strona załadowana', 'success');
+			}
+		    });
 		    lastAjaxToastTime = Date.now();
 		}, 1000);
 	    }
@@ -867,7 +1019,35 @@ window.addEventListener('load', function() {
 	    const now = Date.now();
 	    if (now - lastAjaxToastTime > AJAX_TOAST_COOLDOWN) {
 		setTimeout(function() {
-		    showToast('✅ Następna strona załadowana', 'success');
+		    chrome.storage.local.get(['autoAppend', 'crawlerActive', 'includeHeaderPreference'], function(result) {
+			if (result.crawlerActive) {
+			    handleCrawlerStep();
+			} else if (result.autoAppend) {
+			    // Find the best table to copy
+			    const tables = document.querySelectorAll('table');
+			    let targetTable = null;
+			    let maxRows = 0;
+			    
+			    tables.forEach(t => {
+				if (t.rows.length > maxRows && t.offsetParent !== null) {
+				    maxRows = t.rows.length;
+				    targetTable = t;
+				}
+			    });
+
+			    if (targetTable) {
+				const includeHeader = result.includeHeaderPreference || false;
+				copyTableToClipboard(targetTable, includeHeader, true).then(res => {
+				    if (res.success) {
+					showToast('✅ Automatycznie dołączono nowe dane', 'success', res.rowCount);
+					updateAllClipboardInfo();
+				    }
+				});
+			    }
+			} else {
+			    showToast('✅ Następna strona załadowana', 'success');
+			}
+		    });
 		    lastAjaxToastTime = Date.now();
 		}, 1000);
 	    }
@@ -915,7 +1095,35 @@ window.addEventListener('load', function() {
 	    const now = Date.now();
 	    if (now - lastAjaxToastTime > AJAX_TOAST_COOLDOWN) {
 		setTimeout(function() {
-		    showToast('✅ Następna strona załadowana', 'success');
+		    chrome.storage.local.get(['autoAppend', 'crawlerActive', 'includeHeaderPreference'], function(result) {
+			if (result.crawlerActive) {
+			    handleCrawlerStep();
+			} else if (result.autoAppend) {
+			    // Find the best table to copy
+			    const tables = document.querySelectorAll('table');
+			    let targetTable = null;
+			    let maxRows = 0;
+			    
+			    tables.forEach(t => {
+				if (t.rows.length > maxRows && t.offsetParent !== null) {
+				    maxRows = t.rows.length;
+				    targetTable = t;
+				}
+			    });
+
+			    if (targetTable) {
+				const includeHeader = result.includeHeaderPreference || false;
+				copyTableToClipboard(targetTable, includeHeader, true).then(res => {
+				    if (res.success) {
+					showToast('✅ Automatycznie dołączono nowe dane', 'success', res.rowCount);
+					updateAllClipboardInfo();
+				    }
+				});
+			    }
+			} else {
+			    showToast('✅ Następna strona załadowana', 'success');
+			}
+		    });
 		    lastAjaxToastTime = Date.now();
 		}, 500);
 	    }

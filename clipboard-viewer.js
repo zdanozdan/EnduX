@@ -506,5 +506,33 @@
         const content = result.accumulatedClipboard || '';
         initializeTable(content);
     });
+
+    // Handle Copy All button
+    const copyAllBtn = document.getElementById('copy-all-btn');
+    if (copyAllBtn) {
+        copyAllBtn.addEventListener('click', function() {
+            if (!originalContent || originalContent.trim().length === 0) {
+                showToast('⚠️ Brak danych do skopiowania');
+                return;
+            }
+
+            navigator.clipboard.writeText(originalContent).then(function() {
+                showToast('✅ Cała zawartość skopiowana do schowka!');
+                
+                // Visual confirmation on button
+                const oldText = copyAllBtn.textContent;
+                copyAllBtn.textContent = '✅ Skopiowano!';
+                copyAllBtn.style.backgroundColor = '#1e7e34';
+                
+                setTimeout(() => {
+                    copyAllBtn.textContent = oldText;
+                    copyAllBtn.style.backgroundColor = '';
+                }, 2000);
+            }).catch(function(err) {
+                console.error('Błąd kopiowania:', err);
+                showToast('❌ Błąd kopiowania do schowka');
+            });
+        });
+    }
 })();
 

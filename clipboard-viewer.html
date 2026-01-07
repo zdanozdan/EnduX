@@ -18,17 +18,45 @@
             border-radius: 8px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }
-        h1 {
-            color: #333;
-            margin-top: 0;
+        .header-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             border-bottom: 2px solid #007bff;
             padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        h1 {
+            color: #333;
+            margin: 0;
+            border-bottom: none;
+            padding-bottom: 0;
         }
         .record-count {
             font-size: 16px;
             font-weight: normal;
             color: #6c757d;
             margin-left: 10px;
+        }
+        .copy-all-btn {
+            background-color: #28a745;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 2px 4px rgba(40, 167, 69, 0.2);
+        }
+        .copy-all-btn:hover {
+            background-color: #218838;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(40, 167, 69, 0.3);
+        }
+        .copy-all-btn:active {
+            transform: translateY(0);
         }
         .table-wrapper {
             overflow-x: auto;
@@ -154,7 +182,10 @@
 </head>
 <body>
     <div class="container">
-        <h1>📋 Zawartość schowka<span class="record-count" id="record-count">(ładowanie...)</span></h1>
+        <div class="header-container">
+            <h1>📋 Zawartość schowka<span class="record-count" id="record-count">(ładowanie...)</span></h1>
+            <button id="copy-all-btn" class="copy-all-btn">📋 Kopiuj wszystko do schowka</button>
+        </div>
         <div class="table-wrapper">
             <div id="initial-loading">Ładowanie danych ze schowka...</div>
             <table class="data-table" id="data-table" style="display: none;"></table>

@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "EnduX",
-    "version": "1.0.0",
+    "version": "1.2.0",
     "description": "Rozszerzenie do kopiowania i zarządzania tabelami wyników",
     "icons": {
 	"16": "images/icon16.png",
@@ -60,6 +60,6 @@
 	{
 	    "resources": ["clipboard-viewer.html", "clipboard-viewer.js"],
 	    "matches": ["<all_urls>"]
-	}
+    }
     ]
 }

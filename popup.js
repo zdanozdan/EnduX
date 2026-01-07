@@ -239,7 +239,7 @@ document.addEventListener('DOMContentLoaded', function () {
 	    }
 	}
     }
-    
+
     // Handle extension enable/disable checkbox
     const extensionEnabledCheckbox = document.getElementById('extensionEnabled');
     
@@ -323,6 +323,65 @@ document.addEventListener('DOMContentLoaded', function () {
 	preventDuplicatesCheckbox.addEventListener('change', function() {
 	    const preventDuplicates = preventDuplicatesCheckbox.checked;
 	    chrome.storage.local.set({ preventDuplicates: preventDuplicates }, function() {
+	    });
+	});
+    }
+
+    // Handle auto append checkbox
+    const autoAppendCheckbox = document.getElementById('autoAppend');
+    if (autoAppendCheckbox) {
+	// Load saved state (default to false)
+	chrome.storage.local.get(['autoAppend'], function(result) {
+	    autoAppendCheckbox.checked = result.autoAppend === true;
+	});
+
+	// Handle checkbox change
+	autoAppendCheckbox.addEventListener('change', function() {
+	    const autoAppend = autoAppendCheckbox.checked;
+	    chrome.storage.local.set({ autoAppend: autoAppend }, function() {
+	    });
+	});
+    }
+
+    // Handle crawler configuration
+    const crawlerClassInput = document.getElementById('crawlerClass');
+    const crawlerActiveCheckbox = document.getElementById('crawlerActive');
+
+    if (crawlerClassInput && crawlerActiveCheckbox) {
+	// Load saved state
+	chrome.storage.local.get(['crawlerClass', 'crawlerActive'], function(result) {
+	    if (result.crawlerClass) crawlerClassInput.value = result.crawlerClass;
+	    crawlerActiveCheckbox.checked = result.crawlerActive === true;
+	});
+
+	// Save class name on input
+	crawlerClassInput.addEventListener('input', function() {
+	    chrome.storage.local.set({ crawlerClass: crawlerClassInput.value.trim() });
+	});
+
+	// Handle crawler toggle
+	crawlerActiveCheckbox.addEventListener('change', function() {
+	    const active = crawlerActiveCheckbox.checked;
+	    const className = crawlerClassInput.value.trim();
+
+	    if (active && !className) {
+		showToast('❌ Podaj klasę przycisku "Dalej"', 'error');
+		crawlerActiveCheckbox.checked = false;
+		return;
+	    }
+
+	    chrome.storage.local.set({ crawlerActive: active }, function() {
+		if (active) {
+		    showToast('🚀 Crawler uruchomiony', 'success');
+		    // Notify content script to start immediately if on a page with table
+		    chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+			if (tabs[0]) {
+			    chrome.tabs.sendMessage(tabs[0].id, { action: 'startCrawler' });
+			}
+		    });
+		} else {
+		    showToast('⏹️ Crawler zatrzymany', 'warning');
+		}
 	    });
 	});
     }
@@ -537,7 +596,7 @@ function handleFormInput(event) {
 	if (target.type === 'checkbox') {
 	    saveToStorage(target.name, target.checked);
 	} else {
-	    saveToStorage(target.name, target.value);
+        saveToStorage(target.name, target.value);
 	}
     }
 };
