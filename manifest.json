@@ -43,15 +43,15 @@
     "commands": {
 	"copy-table": {
 	    "suggested_key": {
-		"default": "Ctrl+C",
-		"mac": "Command+C"
+		"default": "Ctrl+Shift+C",
+		"mac": "Command+Shift+C"
 	    },
 	    "description": "Kopiuj tabelę"
 	},
 	"append-table": {
 	    "suggested_key": {
-		"default": "Ctrl+A",
-		"mac": "Command+A"
+		"default": "Ctrl+Shift+A",
+		"mac": "Command+Shift+A"
 	    },
 	    "description": "Dołącz tabelę do schowka"
 	}

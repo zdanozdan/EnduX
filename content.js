@@ -246,12 +246,23 @@ function copyTableToClipboard(table, includeHeader, append = false) {
     const thead = table.querySelector('thead');
     const theadRows = thead ? thead.rows : [];
     
-    // Get tbody rows (or all rows if no tbody)
-    const tbody = table.querySelector('tbody');
-    const bodyRows = tbody ? tbody.rows : Array.from(table.rows).filter((row, index) => {
-	// If there's a thead, skip thead rows from table.rows
-	return !thead || index >= theadRows.length;
-    });
+    // Get all tbody elements (tables can have multiple tbody)
+    const allTbodies = table.querySelectorAll('tbody');
+    let bodyRows = [];
+    
+    if (allTbodies.length > 0) {
+	// Collect rows from all tbody elements
+	for (let i = 0; i < allTbodies.length; i++) {
+	    const tbodyRows = Array.from(allTbodies[i].rows);
+	    bodyRows = bodyRows.concat(tbodyRows);
+	}
+    } else {
+	// If no tbody, get all rows and skip thead rows
+	bodyRows = Array.from(table.rows).filter((row, index) => {
+	    // If there's a thead, skip thead rows from table.rows
+	    return !thead || index >= theadRows.length;
+	});
+    }
     
     // Add thead rows if includeHeader is true
     if (includeHeader && theadRows.length > 0) {
@@ -552,6 +563,230 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
     
     return true;
 });
+
+// Keyboard shortcuts: Shift+C (copy table) and Shift+A (append table)
+document.addEventListener('keydown', function(event) {
+    // Check if extension is enabled
+    chrome.storage.local.get(['extensionEnabled'], function(result) {
+	const isEnabled = result.extensionEnabled !== false; // Default to true
+	if (!isEnabled) {
+	    return; // Don't handle shortcuts if extension is disabled
+	}
+	
+	// Check if Shift is pressed and not in an input field
+	const isInputField = event.target.tagName === 'INPUT' || 
+			     event.target.tagName === 'TEXTAREA' || 
+			     event.target.isContentEditable;
+	
+	// Shift+C: Copy table
+	if (event.shiftKey && event.key === 'C' && !event.ctrlKey && !event.metaKey && !isInputField) {
+	    event.preventDefault();
+	    event.stopPropagation();
+	    
+	    // Find the best table to copy
+	    const tables = document.querySelectorAll('table');
+	    let targetTable = null;
+	    
+	    if (tables.length > 0) {
+		// Try to find table based on selection or active element
+		const selection = window.getSelection();
+		const activeElement = document.activeElement;
+		
+		// If there's a text selection, try to find table containing it
+		if (selection && selection.rangeCount > 0) {
+		    const range = selection.getRangeAt(0);
+		    let node = range.commonAncestorContainer;
+		    
+		    // Walk up the DOM tree to find a table
+		    while (node && node.nodeType !== Node.ELEMENT_NODE) {
+			node = node.parentNode;
+		    }
+		    
+		    while (node && node.tagName !== 'TABLE') {
+			node = node.parentElement;
+		    }
+		    
+		    if (node && node.tagName === 'TABLE') {
+			targetTable = node;
+		    }
+		}
+		
+		// If no table from selection, try active element
+		if (!targetTable && activeElement) {
+		    let node = activeElement;
+		    while (node && node.tagName !== 'TABLE') {
+			node = node.parentElement;
+		    }
+		    if (node && node.tagName === 'TABLE') {
+			targetTable = node;
+		    }
+		}
+		
+		// If still no table, find the table closest to center of viewport
+		if (!targetTable) {
+		    const viewportCenter = window.innerHeight / 2;
+		    let closestTable = null;
+		    let closestDistance = Infinity;
+		    
+		    for (let i = 0; i < tables.length; i++) {
+			const rect = tables[i].getBoundingClientRect();
+			// Check if table is visible in viewport
+			if (rect.top < window.innerHeight && rect.bottom > 0) {
+			    // Calculate distance from viewport center
+			    const tableCenter = rect.top + (rect.height / 2);
+			    const distance = Math.abs(tableCenter - viewportCenter);
+			    
+			    if (distance < closestDistance) {
+				closestDistance = distance;
+				closestTable = tables[i];
+			    }
+			}
+		    }
+		    
+		    targetTable = closestTable;
+		}
+		
+		// Fallback: use first visible table in viewport
+		if (!targetTable) {
+		    for (let i = 0; i < tables.length; i++) {
+			const rect = tables[i].getBoundingClientRect();
+			if (rect.top >= 0 && rect.top < window.innerHeight) {
+			    targetTable = tables[i];
+			    break;
+			}
+		    }
+		}
+		
+		// Last resort: use the first table on the page
+		if (!targetTable && tables.length > 0) {
+		    targetTable = tables[0];
+		}
+	    }
+	    
+	    if (targetTable) {
+		chrome.storage.local.get(['includeHeaderPreference'], function(result) {
+		    const includeHeader = result.includeHeaderPreference || false;
+		    copyTableToClipboard(targetTable, includeHeader, false).then(function(copyResult) {
+			if (copyResult.success) {
+			    showToast('📋 Tabela skopiowana do schowka', 'success', copyResult.rowCount);
+			    updateAllClipboardInfo();
+			} else {
+			    if (!copyResult.isDuplicate) {
+				showToast('❌ Nie udało się skopiować tabeli', 'error');
+			    }
+			}
+		    });
+		});
+	    } else {
+		showToast('❌ Nie znaleziono tabeli na stronie', 'error');
+	    }
+	}
+	
+	// Shift+A: Append table
+	if (event.shiftKey && event.key === 'A' && !event.ctrlKey && !event.metaKey && !isInputField) {
+	    event.preventDefault();
+	    event.stopPropagation();
+	    
+	    // Find the best table to append
+	    const tables = document.querySelectorAll('table');
+	    let targetTable = null;
+	    
+	    if (tables.length > 0) {
+		// Try to find table based on selection or active element
+		const selection = window.getSelection();
+		const activeElement = document.activeElement;
+		
+		// If there's a text selection, try to find table containing it
+		if (selection && selection.rangeCount > 0) {
+		    const range = selection.getRangeAt(0);
+		    let node = range.commonAncestorContainer;
+		    
+		    // Walk up the DOM tree to find a table
+		    while (node && node.nodeType !== Node.ELEMENT_NODE) {
+			node = node.parentNode;
+		    }
+		    
+		    while (node && node.tagName !== 'TABLE') {
+			node = node.parentElement;
+		    }
+		    
+		    if (node && node.tagName === 'TABLE') {
+			targetTable = node;
+		    }
+		}
+		
+		// If no table from selection, try active element
+		if (!targetTable && activeElement) {
+		    let node = activeElement;
+		    while (node && node.tagName !== 'TABLE') {
+			node = node.parentElement;
+		    }
+		    if (node && node.tagName === 'TABLE') {
+			targetTable = node;
+		    }
+		}
+		
+		// If still no table, find the table closest to center of viewport
+		if (!targetTable) {
+		    const viewportCenter = window.innerHeight / 2;
+		    let closestTable = null;
+		    let closestDistance = Infinity;
+		    
+		    for (let i = 0; i < tables.length; i++) {
+			const rect = tables[i].getBoundingClientRect();
+			// Check if table is visible in viewport
+			if (rect.top < window.innerHeight && rect.bottom > 0) {
+			    // Calculate distance from viewport center
+			    const tableCenter = rect.top + (rect.height / 2);
+			    const distance = Math.abs(tableCenter - viewportCenter);
+			    
+			    if (distance < closestDistance) {
+				closestDistance = distance;
+				closestTable = tables[i];
+			    }
+			}
+		    }
+		    
+		    targetTable = closestTable;
+		}
+		
+		// Fallback: use first visible table in viewport
+		if (!targetTable) {
+		    for (let i = 0; i < tables.length; i++) {
+			const rect = tables[i].getBoundingClientRect();
+			if (rect.top >= 0 && rect.top < window.innerHeight) {
+			    targetTable = tables[i];
+			    break;
+			}
+		    }
+		}
+		
+		// Last resort: use the first table on the page
+		if (!targetTable && tables.length > 0) {
+		    targetTable = tables[0];
+		}
+	    }
+	    
+	    if (targetTable) {
+		chrome.storage.local.get(['includeHeaderPreference'], function(result) {
+		    const includeHeader = result.includeHeaderPreference || false;
+		    copyTableToClipboard(targetTable, includeHeader, true).then(function(appendResult) {
+			if (appendResult.success) {
+			    showToast('📋 Tabela dołączona do schowka', 'success', appendResult.rowCount);
+			    updateAllClipboardInfo();
+			} else {
+			    if (!appendResult.isDuplicate) {
+				showToast('❌ Nie udało się dołączyć tabeli', 'error');
+			    }
+			}
+		    });
+		});
+	    } else {
+		showToast('❌ Nie znaleziono tabeli na stronie', 'error');
+	    }
+	}
+    });
+}, true); // Use capture phase to catch events early
 
 // Wait until the page is fully loaded
 window.addEventListener('load', function() {

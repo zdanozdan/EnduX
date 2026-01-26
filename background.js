@@ -2,23 +2,17 @@
 
 // Function to create context menu items
 function createContextMenu() {
-    // Get platform info to show correct keyboard shortcut
-    chrome.runtime.getPlatformInfo(function(info) {
-	const isMac = info.os === 'mac';
-	const modifier = isMac ? '⌘' : 'Ctrl';
+    chrome.contextMenus.removeAll(() => {
+	chrome.contextMenus.create({
+	    id: 'endux-copy-table',
+	    title: '📋 Kopiuj tabelę\tShift+C',
+	    contexts: ['page', 'selection']
+	});
 	
-	chrome.contextMenus.removeAll(() => {
-	    chrome.contextMenus.create({
-		id: 'endux-copy-table',
-		title: '📋 Kopiuj tabelę\t' + modifier + '+C',
-		contexts: ['page', 'selection']
-	    });
-	    
-	    chrome.contextMenus.create({
-		id: 'endux-append-table',
-		title: '📋 Dołącz tabelę\t' + modifier + '+A',
-		contexts: ['page', 'selection']
-	    });
+	chrome.contextMenus.create({
+	    id: 'endux-append-table',
+	    title: '📋 Dołącz tabelę\tShift+A',
+	    contexts: ['page', 'selection']
 	});
     });
 }
