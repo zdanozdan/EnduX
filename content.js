@@ -45,13 +45,13 @@ function updateAllClipboardInfo() {
 // Function to handle Crawler Step
 async function handleCrawlerStep() {
     console.log('EnduX Crawler: Sprawdzanie stanu...');
-    // Check if crawler is active and has class defined
+    // Check if crawler is active and has configuration defined
     const result = await new Promise(resolve => {
-        chrome.storage.local.get(['crawlerActive', 'crawlerClass', 'includeHeaderPreference', 'extensionEnabled'], resolve);
+        chrome.storage.local.get(['crawlerActive', 'crawlerClass', 'crawlerPaginator', 'includeHeaderPreference', 'extensionEnabled'], resolve);
     });
 
-    if (!result.extensionEnabled || !result.crawlerActive || !result.crawlerClass) {
-        console.log('EnduX Crawler: Crawler nie jest aktywny.');
+    if (!result.extensionEnabled || !result.crawlerActive || (!result.crawlerClass && !result.crawlerPaginator)) {
+        console.log('EnduX Crawler: Crawler nie jest aktywny lub brak konfiguracji.');
         return;
     }
 
@@ -80,7 +80,50 @@ async function handleCrawlerStep() {
             showToast('🚀 Crawler: Dane zapisane', 'success', copyResult.rowCount);
             updateAllClipboardInfo();
 
-            // Find "Next" button
+            // 1. Check for Paginator logic first
+            if (result.crawlerPaginator && result.crawlerPaginator.includes('=') && result.crawlerPaginator.includes('-')) {
+                console.log('EnduX Crawler: Próba użycia Paginatora:', result.crawlerPaginator);
+                
+                // Parse: &page=1-100 or page=1-100
+                const cleanPaginator = result.crawlerPaginator.startsWith('&') ? result.crawlerPaginator.substring(1) : result.crawlerPaginator;
+                const [paramPart, rangePart] = cleanPaginator.split('=');
+                const [startPage, endPage] = rangePart.split('-').map(Number);
+                
+                if (paramPart && !isNaN(startPage) && !isNaN(endPage)) {
+                    const currentUrl = new URL(window.location.href);
+                    const currentPageVal = currentUrl.searchParams.get(paramPart);
+                    let currentPage = currentPageVal ? parseInt(currentPageVal) : (startPage > 0 ? startPage : 1);
+                    
+                    if (currentPage < endPage) {
+                        const nextPage = currentPage + 1;
+                        console.log(`EnduX Crawler: Paginacja do strony ${nextPage}...`);
+                        
+                        currentUrl.searchParams.set(paramPart, nextPage);
+                        
+                        setTimeout(() => {
+                            chrome.storage.local.get(['crawlerActive'], function(res) {
+                                if (res.crawlerActive) {
+                                    window.location.href = currentUrl.toString();
+                                }
+                            });
+                        }, 2000);
+                        return; // Stop here, we are redirecting
+                    } else {
+                        console.log('EnduX Crawler: Osiągnięto koniec zakresu paginatora.');
+                        chrome.storage.local.set({ crawlerActive: false });
+                        showToast('🏁 Crawler: Zakres paginacji zakończony', 'success');
+                        return;
+                    }
+                }
+            }
+
+            // 2. Fallback to "Next" button logic if paginator not used or failed
+            if (!result.crawlerClass) {
+                console.log('EnduX Crawler: Brak klasy przycisku Dalej i paginator nie obsłużył przejścia.');
+                chrome.storage.local.set({ crawlerActive: false });
+                return;
+            }
+
             let className = result.crawlerClass.trim();
             if (!className.startsWith('.') && !className.startsWith('#')) {
                 // Handle multiple classes like "btn next" -> ".btn.next"

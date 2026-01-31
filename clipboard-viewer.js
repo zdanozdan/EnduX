@@ -511,12 +511,17 @@
     const copyAllBtn = document.getElementById('copy-all-btn');
     if (copyAllBtn) {
         copyAllBtn.addEventListener('click', function() {
-            if (!originalContent || originalContent.trim().length === 0) {
+            const filteredContent = originalContent
+                .split('\n')
+                .filter(line => line.trim().length > 0)
+                .join('\n');
+
+            if (filteredContent.trim().length === 0) {
                 showToast('⚠️ Brak danych do skopiowania');
                 return;
             }
 
-            navigator.clipboard.writeText(originalContent).then(function() {
+            navigator.clipboard.writeText(filteredContent).then(function() {
                 showToast('✅ Cała zawartość skopiowana do schowka!');
                 
                 // Visual confirmation on button

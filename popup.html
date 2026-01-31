@@ -26,13 +26,7 @@
         <!-- Bootstrap Tabs -->
         <ul class="nav nav-tabs" id="myTab" role="tablist">
             <li class="nav-item" role="presentation">
-                <a class="nav-link active" id="nowe-tab" data-bs-toggle="tab" href="#nowe" role="tab" aria-controls="nowe" aria-selected="true">Zgłoszenie</a>
-            </li>
-            <li class="nav-item" role="presentation">
-                <a class="nav-link" id="from-list-tab" data-bs-toggle="tab" href="#from-list" role="tab" aria-controls="from-list" aria-selected="false">Zgłoszenia</a>
-            </li>
-            <li class="nav-item" role="presentation">
-                <a class="nav-link" id="ustawienia-tab" data-bs-toggle="tab" href="#ustawienia" role="tab" aria-controls="ustawienia" aria-selected="false">Ustawienia</a>
+                <a class="nav-link active" id="ustawienia-tab" data-bs-toggle="tab" href="#ustawienia" role="tab" aria-controls="ustawienia" aria-selected="true">Ustawienia</a>
             </li>
             <li class="nav-item" role="presentation">
                 <a class="nav-link" id="logowanie-tab" data-bs-toggle="tab" href="#logowanie" role="tab" aria-controls="logowanie" aria-selected="false">Logowanie</a>
@@ -44,30 +38,8 @@
 
         <!-- Tab Content -->
         <div class="tab-content mt-4" id="myTabContent">
-            <!-- "Zgłoszenie" Tab (Form) -->
-            <div class="tab-pane fade show active" id="nowe" role="tabpanel" aria-labelledby="nowe-tab">
-              <!-- Container where the fetched form will be inserted -->
-              <div id="formContainer">
-                <!-- The form will be injected here -->
-              </div>
-            </div>
-	    
-            <!-- "Z Listy" Tab (Events List) -->
-            <div class="tab-pane fade" id="from-list" role="tabpanel" aria-labelledby="from-list-tab">
-              <h3>Lista zgłoszeń</h3>
-	      <!-- Dropdown (Empty initially) -->
-              <div class="mb-3">
-		<label for="userSubmits" class="form-label">Wybierz zgłoszenie</label>
-		<select class="form-select" id="userSubmits" aria-label="Select Event">
-                  <!-- Options will be populated dynamically -->
-		</select>
-              </div>
-	      <!-- Test Button -->
-	      <button id="selectButton" class="btn btn-primary">Wypełnij formularz</button>
-            </div>
-            
             <!-- "Ustawienia" Tab -->
-            <div class="tab-pane fade" id="ustawienia" role="tabpanel" aria-labelledby="ustawienia-tab">
+            <div class="tab-pane fade show active" id="ustawienia" role="tabpanel" aria-labelledby="ustawienia-tab">
               <h3>Ustawienia</h3>
               
               <div class="mb-3 p-3 bg-light border rounded">
@@ -95,6 +67,10 @@
                 <div class="input-group input-group-sm mb-2">
                   <span class="input-group-text">Klasa "Dalej"</span>
                   <input type="text" class="form-control" id="crawlerClass" placeholder="np. next-page">
+                </div>
+                <div class="input-group input-group-sm mb-2">
+                  <span class="input-group-text">Paginator</span>
+                  <input type="text" class="form-control" id="crawlerPaginator" placeholder="np. &page=1-100">
                 </div>
                 <div class="form-check form-switch mb-2">
                   <input class="form-check-input" type="checkbox" id="crawlerActive">
