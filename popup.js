@@ -163,6 +163,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const crawlerClassInput = document.getElementById('crawlerClass');
     const crawlerPaginatorInput = document.getElementById('crawlerPaginator');
     const crawlerActiveCheckbox = document.getElementById('crawlerActive');
+    const pickCrawlerClassBtn = document.getElementById('pickCrawlerClass');
 
     if (crawlerClassInput && crawlerPaginatorInput && crawlerActiveCheckbox) {
 	// Load saved state
@@ -176,6 +177,26 @@ document.addEventListener('DOMContentLoaded', function () {
 	crawlerClassInput.addEventListener('input', function() {
 	    chrome.storage.local.set({ crawlerClass: crawlerClassInput.value.trim() });
 	});
+
+	// Selector picker button - activates visual element picking on the page
+	if (pickCrawlerClassBtn) {
+	    pickCrawlerClassBtn.addEventListener('click', function() {
+		chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+		    if (!tabs[0]) return;
+		    chrome.tabs.sendMessage(tabs[0].id, {
+			action: 'startSelectorPicker',
+			storageKey: 'crawlerClass'
+		    }, function() {
+			if (chrome.runtime.lastError) {
+			    showToast('❌ Nie można uruchomić na tej stronie', 'error');
+			    return;
+			}
+			// Close popup so user can interact with the page
+			window.close();
+		    });
+		});
+	    });
+	}
 
 	// Save paginator on input
 	crawlerPaginatorInput.addEventListener('input', function() {

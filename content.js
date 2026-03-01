@@ -36,7 +36,9 @@ function getPlainText(element) {
 
 // Global function to update all clipboard info elements on the page
 function updateAllClipboardInfo() {
+    try { if (!chrome.runtime?.id) return; } catch (e) { return; }
     chrome.storage.local.get(['accumulatedClipboard'], function(result) {
+	if (chrome.runtime.lastError) return;
 	const content = result.accumulatedClipboard || '';
 	const rowCount = content ? content.split('\n').filter(line => line.trim().length > 0).length : 0;
 	const infoText = `📊 W schowku: ${rowCount} wierszy`;
@@ -51,6 +53,14 @@ function updateAllClipboardInfo() {
 
 // Function to handle Crawler Step
 async function handleCrawlerStep() {
+    try {
+	if (!chrome.runtime?.id) return;
+    } catch (e) { return; }
+    if (_crawlerStepRunning) {
+        console.log('EnduX Crawler: Poprzedni krok jeszcze trwa, pomijanie.');
+        return;
+    }
+    _crawlerStepRunning = true;
     console.log('EnduX Crawler: Sprawdzanie stanu...');
     // Check if crawler is active and has configuration defined
     const result = await new Promise(resolve => {
@@ -59,15 +69,14 @@ async function handleCrawlerStep() {
 
     if (!result.extensionEnabled || !result.crawlerActive || (!result.crawlerClass && !result.crawlerPaginator)) {
         console.log('EnduX Crawler: Crawler nie jest aktywny lub brak konfiguracji.');
+        _crawlerStepRunning = false;
         return;
     }
 
     console.log('EnduX Crawler: Próba znalezienia tabeli...');
-    // Find the best table to copy (including tables in iframes)
     const tables = getAllTables();
     let targetTable = null;
     let maxRows = 0;
-    
     tables.forEach(t => {
         if (t.rows.length > maxRows && t.offsetParent !== null) {
             maxRows = t.rows.length;
@@ -75,105 +84,111 @@ async function handleCrawlerStep() {
         }
     });
 
-    if (targetTable) {
-        console.log('EnduX Crawler: Znaleziono tabelę, kopiowanie...');
-        const includeHeader = result.includeHeaderPreference || false;
-        
-        // COPY AND WAIT (Sequential)
-        const copyResult = await copyTableToClipboard(targetTable, includeHeader, true);
-        
-        if (copyResult.success) {
-            console.log('EnduX Crawler: Dane zapisane pomyślnie.');
-            showToast('🚀 Crawler: Dane zapisane', 'success', copyResult.rowCount);
-            updateAllClipboardInfo();
+    if (!targetTable) {
+        console.log('EnduX Crawler: Nie znaleziono tabeli na tej stronie.');
+        _crawlerStepRunning = false;
+        return;
+    }
 
-            // 1. Check for Paginator logic first
-            if (result.crawlerPaginator && result.crawlerPaginator.includes('=') && result.crawlerPaginator.includes('-')) {
-                console.log('EnduX Crawler: Próba użycia Paginatora:', result.crawlerPaginator);
-                
-                // Parse: &page=1-100 or page=1-100
-                const cleanPaginator = result.crawlerPaginator.startsWith('&') ? result.crawlerPaginator.substring(1) : result.crawlerPaginator;
-                const [paramPart, rangePart] = cleanPaginator.split('=');
-                const [startPage, endPage] = rangePart.split('-').map(Number);
-                
-                if (paramPart && !isNaN(startPage) && !isNaN(endPage)) {
-                    const currentUrl = new URL(window.location.href);
-                    const currentPageVal = currentUrl.searchParams.get(paramPart);
-                    let currentPage = currentPageVal ? parseInt(currentPageVal) : (startPage > 0 ? startPage : 1);
-                    
-                    if (currentPage < endPage) {
-                        const nextPage = currentPage + 1;
-                        console.log(`EnduX Crawler: Paginacja do strony ${nextPage}...`);
-                        
-                        currentUrl.searchParams.set(paramPart, nextPage);
-                        
-                        setTimeout(() => {
-                            chrome.storage.local.get(['crawlerActive'], function(res) {
-                                if (res.crawlerActive) {
-                                    window.location.href = currentUrl.toString();
-                                }
-                            });
-                        }, 2000);
-                        return; // Stop here, we are redirecting
-                    } else {
-                        console.log('EnduX Crawler: Osiągnięto koniec zakresu paginatora.');
-                        chrome.storage.local.set({ crawlerActive: false });
-                        showToast('🏁 Crawler: Zakres paginacji zakończony', 'success');
-                        return;
-                    }
-                }
-            }
+    console.log('EnduX Crawler: Znaleziono tabelę, kopiowanie...');
+    const includeHeader = result.includeHeaderPreference || false;
+    const copyResult = await copyTableToClipboard(targetTable, includeHeader, true);
 
-            // 2. Fallback to "Next" button logic if paginator not used or failed
-            if (!result.crawlerClass) {
-                console.log('EnduX Crawler: Brak klasy przycisku Dalej i paginator nie obsłużył przejścia.');
+    if (copyResult.isDuplicate) {
+        console.log('EnduX Crawler: Wykryto duplikat, zatrzymywanie.');
+        chrome.storage.local.set({ crawlerActive: false });
+        showToast('⚠️ Crawler: Wykryto duplikaty, zatrzymano.', 'warning');
+        _crawlerStepRunning = false;
+        return;
+    }
+
+    if (!copyResult.success) {
+        _crawlerStepRunning = false;
+        return;
+    }
+
+    console.log('EnduX Crawler: Dane zapisane pomyślnie.');
+    showToast('🚀 Crawler: Dane zapisane', 'success', copyResult.rowCount);
+    updateAllClipboardInfo();
+
+    // 1. URL paginator (e.g. &page=1-100)
+    if (result.crawlerPaginator && result.crawlerPaginator.includes('=') && result.crawlerPaginator.includes('-')) {
+        console.log('EnduX Crawler: Próba użycia Paginatora:', result.crawlerPaginator);
+        const cleanPaginator = result.crawlerPaginator.startsWith('&') ? result.crawlerPaginator.substring(1) : result.crawlerPaginator;
+        const [paramPart, rangePart] = cleanPaginator.split('=');
+        const [startPage, endPage] = rangePart.split('-').map(Number);
+
+        if (paramPart && !isNaN(startPage) && !isNaN(endPage)) {
+            const currentUrl = new URL(window.location.href);
+            const currentPageVal = currentUrl.searchParams.get(paramPart);
+            let currentPage = currentPageVal ? parseInt(currentPageVal) : (startPage > 0 ? startPage : 1);
+
+            if (currentPage < endPage) {
+                const nextPage = currentPage + 1;
+                console.log(`EnduX Crawler: Paginacja do strony ${nextPage}...`);
+                currentUrl.searchParams.set(paramPart, nextPage);
+                setTimeout(() => {
+                    chrome.storage.local.get(['crawlerActive'], function(res) {
+                        _crawlerStepRunning = false;
+                        if (res.crawlerActive) window.location.href = currentUrl.toString();
+                    });
+                }, 1500);
+                return;
+            } else {
+                console.log('EnduX Crawler: Osiągnięto koniec zakresu paginatora.');
                 chrome.storage.local.set({ crawlerActive: false });
+                showToast('🏁 Crawler: Zakres paginacji zakończony', 'success');
+                _crawlerStepRunning = false;
                 return;
             }
-
-            let className = result.crawlerClass.trim();
-            if (!className.startsWith('.') && !className.startsWith('#')) {
-                // Handle multiple classes like "btn next" -> ".btn.next"
-                className = '.' + className.replace(/\s+/g, '.');
-            }
-            
-            const nextButton = document.querySelector(className);
-            console.log('EnduX Crawler: Przycisk Dalej (', className, '):', nextButton);
-            
-            const canGoNext = nextButton && 
-                             !nextButton.classList.contains('disabled') && 
-                             !nextButton.hasAttribute('disabled') &&
-                             nextButton.offsetParent !== null;
-
-            if (canGoNext) {
-                console.log('EnduX Crawler: Przechodzenie do następnej strony za 2 sekundy...');
-                // Wait 2 seconds before clicking
-                setTimeout(() => {
-                    // Check if still active
-                    chrome.storage.local.get(['crawlerActive'], function(res) {
-                        if (res.crawlerActive) {
-                            console.log('EnduX Crawler: Kliknięcie!');
-                            nextButton.click();
-                            // Handle cases where <a> needs extra nudge
-                            if (nextButton.tagName === 'A' && nextButton.href && !nextButton.href.startsWith('javascript')) {
-                                // Sometimes simple click() isn't enough for <a>
-                                nextButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                            }
-                        }
-                    });
-                }, 2000);
-            } else {
-                console.log('EnduX Crawler: Brak aktywnego przycisku Dalej.');
-                chrome.storage.local.set({ crawlerActive: false });
-                showToast('🏁 Crawler: Koniec danych lub nie znaleziono przycisku', 'success');
-            }
-        } else if (copyResult.isDuplicate) {
-            console.log('EnduX Crawler: Wykryto duplikat, zatrzymywanie.');
-            chrome.storage.local.set({ crawlerActive: false });
-            showToast('⚠️ Crawler: Wykryto duplikaty, zatrzymano.', 'warning');
         }
+    }
+
+    // 2. "Next" button click
+    if (!result.crawlerClass) {
+        console.log('EnduX Crawler: Brak klasy przycisku Dalej i paginator nie obsłużył przejścia.');
+        chrome.storage.local.set({ crawlerActive: false });
+        _crawlerStepRunning = false;
+        return;
+    }
+
+    const rawSelector = result.crawlerClass.trim();
+    let nextButton = null;
+
+    // Try selector directly (picker-generated: a.next, ul > li > a, #next-btn, .btn.next, etc.)
+    try { nextButton = document.querySelector(rawSelector); } catch (e) {}
+
+    // Fallback: plain class name typed manually without dot (e.g. "next-page" → ".next-page")
+    if (!nextButton && !rawSelector.startsWith('.') && !rawSelector.startsWith('#') &&
+        !rawSelector.includes('>') && !rawSelector.includes('[') && !rawSelector.includes(':')) {
+        try { nextButton = document.querySelector('.' + rawSelector.replace(/\s+/g, '.')); } catch (e) {}
+    }
+
+    console.log('EnduX Crawler: Przycisk Dalej (', rawSelector, '):', nextButton);
+
+    const canGoNext = nextButton &&
+        !nextButton.classList.contains('disabled') &&
+        !nextButton.hasAttribute('disabled') &&
+        nextButton.offsetParent !== null;
+
+    if (canGoNext) {
+        console.log('EnduX Crawler: Kliknięcie za 1.5s...');
+        setTimeout(() => {
+            chrome.storage.local.get(['crawlerActive'], function(res) {
+                _crawlerStepRunning = false;
+                if (!res.crawlerActive) return;
+                console.log('EnduX Crawler: Kliknięcie!');
+                nextButton.click();
+                if (nextButton.tagName === 'A' && nextButton.href && !nextButton.href.startsWith('javascript')) {
+                    nextButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                }
+            });
+        }, 1500);
     } else {
-        console.log('EnduX Crawler: Nie znaleziono tabeli na tej stronie.');
+        console.log('EnduX Crawler: Brak aktywnego przycisku Dalej.');
+        chrome.storage.local.set({ crawlerActive: false });
+        showToast('🏁 Crawler: Koniec danych lub nie znaleziono przycisku', 'success');
+        _crawlerStepRunning = false;
     }
 }
 
@@ -284,7 +299,7 @@ function showToast(message, type = 'success', rowCount = null) {
 }
 
 // Function to copy table to clipboard (with append support)
-function copyTableToClipboard(table, includeHeader, append = false) {
+function copyTableToClipboard(table, includeHeader, append = false, silentDuplicate = false) {
     if (!table || table.tagName !== 'TABLE') {
 	return Promise.resolve({ success: false, rowCount: null });
     }
@@ -378,8 +393,9 @@ function copyTableToClipboard(table, includeHeader, append = false) {
 		// Check for duplicates using hash if option is enabled
 		if (preventDuplicates && tableHash) {
 		    if (existingHashes.includes(tableHash)) {
-			// Show warning and don't append
-			showToast('⚠️ Ta tabela już jest w schowku! Duplikat nie został dodany.', 'warning');
+			if (!silentDuplicate) {
+			    showToast('⚠️ Ta tabela już jest w schowku! Duplikat nie został dodany.', 'warning');
+			}
 			resolve({ success: false, rowCount: null, isDuplicate: true });
 			return;
 		    }
@@ -405,8 +421,8 @@ function copyTableToClipboard(table, includeHeader, append = false) {
 			.then(function() {
 			    resolve({ success: true, rowCount: totalRowCount });
 			})
-			.catch(function(err) {
-			    console.warn('EnduX: Systemowy schowek zablokowany (brak fokusu), ale dane zapisano w pamięci rozszerzenia.', err);
+			.catch(function() {
+			    // Schowek zablokowany (brak fokusu) - dane w pamięci rozszerzenia
 			    // Resolve with success anyway because data is in storage!
 			    resolve({ success: true, rowCount: totalRowCount, clipboardError: true });
 			});
@@ -426,14 +442,153 @@ function copyTableToClipboard(table, includeHeader, append = false) {
 		    .then(function() {
 			resolve({ success: true, rowCount: currentRowCount });
 		    })
-		    .catch(function(err) {
-			console.warn('EnduX: Systemowy schowek zablokowany, dane zapisano w pamięci rozszerzenia.', err);
+		    .catch(function() {
+			// Schowek zablokowany - dane w pamięci rozszerzenia
 			resolve({ success: true, rowCount: currentRowCount, clipboardError: true });
 		    });
 	    });
 	});
     }
 }
+
+let _crawlerStepRunning = false; // Guard against concurrent crawler executions
+
+// ── Selector Picker ──────────────────────────────────────────────────────────
+
+let _pickerActive = false;
+let _pickerHighlightEl = null;
+let _pickerBanner = null;
+let _pickerStorageKey = 'crawlerClass';
+
+function generateCssSelector(el) {
+    if (!el || el === document.body) return 'body';
+
+    // Prefer stable ID
+    if (el.id && !el.id.includes('endux')) {
+        try {
+            const escaped = '#' + CSS.escape(el.id);
+            if (document.querySelectorAll(escaped).length === 1) return escaped;
+        } catch (e) {}
+    }
+
+    // Build tag + class selector
+    let selector = el.tagName.toLowerCase();
+    if (el.className && typeof el.className === 'string') {
+        const classes = el.className.trim().split(/\s+/)
+            .filter(c => c && !c.startsWith('endux'));
+        if (classes.length > 0) {
+            try {
+                selector += '.' + classes.map(c => CSS.escape(c)).join('.');
+            } catch (e) {
+                selector += '.' + classes.join('.');
+            }
+        }
+    }
+
+    try {
+        if (document.querySelectorAll(selector).length === 1) return selector;
+    } catch (e) {}
+
+    // aria-label fallback
+    const ariaLabel = el.getAttribute('aria-label');
+    if (ariaLabel) {
+        const s = `${el.tagName.toLowerCase()}[aria-label="${ariaLabel}"]`;
+        try { if (document.querySelectorAll(s).length === 1) return s; } catch (e) {}
+    }
+
+    // Walk up the DOM
+    if (el.parentElement && el.parentElement !== document.body) {
+        const parentSel = generateCssSelector(el.parentElement);
+        const siblings = Array.from(el.parentElement.children);
+        const sameTag = siblings.filter(s => s.tagName === el.tagName);
+        if (sameTag.length === 1) return parentSel + ' > ' + el.tagName.toLowerCase();
+        const idx = siblings.indexOf(el) + 1;
+        return parentSel + ' > ' + el.tagName.toLowerCase() + ':nth-child(' + idx + ')';
+    }
+
+    return selector;
+}
+
+function _pickerMouseOver(e) {
+    if (!_pickerActive || e.target === _pickerBanner) return;
+    if (_pickerHighlightEl && _pickerHighlightEl !== e.target) {
+        _pickerHighlightEl.style.outline = _pickerHighlightEl._enduxOrigOutline || '';
+        _pickerHighlightEl.style.cursor = _pickerHighlightEl._enduxOrigCursor || '';
+    }
+    _pickerHighlightEl = e.target;
+    _pickerHighlightEl._enduxOrigOutline = _pickerHighlightEl.style.outline;
+    _pickerHighlightEl._enduxOrigCursor = _pickerHighlightEl.style.cursor;
+    _pickerHighlightEl.style.outline = '2px solid #007bff';
+    _pickerHighlightEl.style.cursor = 'crosshair';
+}
+
+function _pickerMouseOut(e) {
+    if (!_pickerActive || !_pickerHighlightEl || e.target === _pickerBanner) return;
+    _pickerHighlightEl.style.outline = _pickerHighlightEl._enduxOrigOutline || '';
+    _pickerHighlightEl.style.cursor = _pickerHighlightEl._enduxOrigCursor || '';
+    _pickerHighlightEl = null;
+}
+
+function _pickerClick(e) {
+    if (!_pickerActive || e.target === _pickerBanner) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const selector = generateCssSelector(e.target);
+    stopSelectorPicker();
+    try {
+        chrome.storage.local.set({ [_pickerStorageKey]: selector }, function() {
+            showToast('🎯 Selektor zapisany: ' + selector, 'success');
+        });
+    } catch (err) {}
+}
+
+function _pickerKeyDown(e) {
+    if (e.key === 'Escape') {
+        stopSelectorPicker();
+        showToast('Wybieranie anulowane', 'warning');
+    }
+}
+
+function startSelectorPicker(storageKey) {
+    if (_pickerActive) stopSelectorPicker();
+    _pickerStorageKey = storageKey || 'crawlerClass';
+    _pickerActive = true;
+    document.body.style.cursor = 'crosshair';
+
+    _pickerBanner = document.createElement('div');
+    _pickerBanner.id = 'endux-picker-banner';
+    _pickerBanner.textContent = '🎯 EnduX: Kliknij przycisk "Dalej" / element paginacji. Esc = anuluj.';
+    Object.assign(_pickerBanner.style, {
+        position: 'fixed', top: '0', left: '0', right: '0', zIndex: '2147483647',
+        background: '#007bff', color: '#fff', textAlign: 'center',
+        padding: '10px 16px', fontSize: '14px', fontWeight: '600',
+        fontFamily: 'sans-serif', boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+        pointerEvents: 'none'
+    });
+    document.body.appendChild(_pickerBanner);
+
+    document.addEventListener('mouseover', _pickerMouseOver, true);
+    document.addEventListener('mouseout',  _pickerMouseOut,  true);
+    document.addEventListener('click',     _pickerClick,     true);
+    document.addEventListener('keydown',   _pickerKeyDown,   true);
+}
+
+function stopSelectorPicker() {
+    _pickerActive = false;
+    document.body.style.cursor = '';
+    if (_pickerHighlightEl) {
+        _pickerHighlightEl.style.outline = _pickerHighlightEl._enduxOrigOutline || '';
+        _pickerHighlightEl.style.cursor  = _pickerHighlightEl._enduxOrigCursor  || '';
+        _pickerHighlightEl = null;
+    }
+    if (_pickerBanner) { _pickerBanner.remove(); _pickerBanner = null; }
+    document.removeEventListener('mouseover', _pickerMouseOver, true);
+    document.removeEventListener('mouseout',  _pickerMouseOut,  true);
+    document.removeEventListener('click',     _pickerClick,     true);
+    document.removeEventListener('keydown',   _pickerKeyDown,   true);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
     if (request.action === 'getPageSource') {
@@ -448,6 +603,9 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
 	sendResponse({ success: true });
     } else if (request.action === 'startCrawler') {
         handleCrawlerStep();
+        sendResponse({ success: true });
+    } else if (request.action === 'startSelectorPicker') {
+        startSelectorPicker(request.storageKey || 'crawlerClass');
         sendResponse({ success: true });
     } else if (request.action === 'showPanels') {
 	chrome.storage.local.get(['extensionEnabled'], function(result) {
@@ -1234,65 +1392,77 @@ window.addEventListener('load', function() {
 	});
     
     // Detect AJAX pagination
-    let lastAjaxToastTime = 0;
-    const AJAX_TOAST_COOLDOWN = 2000; // Show toast max once per 2 seconds
+    let lastAutoAppendCopyTime = 0;
+    let mutationQuickTimer = null;  // Fires fast (50ms), non-cancelling - catches each page during rapid navigation
+    let mutationSettleTimer = null; // Debounced (400ms) - catches row-by-row loading
+    const FETCH_DELAY_MS = 1800;
+    const QUICK_DELAY_MS = 50;
+    const SETTLE_DELAY_MS = 400;
     
-    // Check if crawler should run on initial load
+    function runAutoAppendAfterDelay(delayMs) {
+	setTimeout(function() {
+	    try {
+		if (!chrome.runtime?.id) return; // Extension context invalidated
+		chrome.storage.local.get(['extensionEnabled', 'autoAppend', 'crawlerActive', 'includeHeaderPreference'], function(result) {
+		    if (chrome.runtime.lastError) return;
+		    if (result.extensionEnabled === false) return;
+		    if (result.crawlerActive) {
+			handleCrawlerStep();
+			return;
+		    }
+		    if (!result.autoAppend) return;
+		    var tables = getAllTables();
+		    var targetTable = null;
+		    var maxRows = 0;
+		    tables.forEach(function(t) {
+			if (t.rows.length > maxRows && t.offsetParent !== null) {
+			    maxRows = t.rows.length;
+			    targetTable = t;
+			}
+		    });
+		    if (targetTable) {
+			var includeHeader = result.includeHeaderPreference || false;
+			copyTableToClipboard(targetTable, includeHeader, true, true).then(function(res) {
+			    if (res.success) {
+				lastAutoAppendCopyTime = Date.now();
+				showToast('✅ Automatycznie dołączono nowe dane', 'success', res.rowCount);
+				updateAllClipboardInfo();
+			    }
+			});
+		    }
+		});
+	    } catch (e) {
+		// Extension context invalidated - content script will be replaced on next page load
+	    }
+	}, delayMs);
+    }
+    
+    // Check if crawler or autoAppend should run on initial page load (also handles full-page navigation)
     setTimeout(() => {
-        chrome.storage.local.get(['extensionEnabled', 'crawlerActive'], function(res) {
+        chrome.storage.local.get(['extensionEnabled', 'crawlerActive', 'autoAppend'], function(res) {
             if (res.extensionEnabled === false) return;
             if (res.crawlerActive) {
                 handleCrawlerStep();
+            } else if (res.autoAppend) {
+                runAutoAppendAfterDelay(0);
             }
         });
     }, 2500);
 
-    // Intercept fetch requests
+    // Intercept fetch - run AFTER response + DOM update
     const originalFetch = window.fetch;
     window.fetch = function(...args) {
-	const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
-	const isPaginationRequest = url.includes('page') || 
-				     url.includes('pagination') || 
-				     url.includes('ajax') ||
-				     (args[1] && args[1].method && args[1].method.toUpperCase() !== 'GET' && url.includes('table'));
+	var url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
+	var isPaginationRequest = url.includes('page') || url.includes('pagination') || url.includes('ajax') ||
+	    (args[1] && args[1].method && args[1].method.toUpperCase() !== 'GET' && url.includes('table'));
 	
+	var fetchPromise = originalFetch.apply(this, args);
 	if (isPaginationRequest) {
-	    const now = Date.now();
-	    if (now - lastAjaxToastTime > AJAX_TOAST_COOLDOWN) {
-		setTimeout(function() {
-		    chrome.storage.local.get(['extensionEnabled', 'autoAppend', 'crawlerActive', 'includeHeaderPreference'], function(result) {
-			if (result.extensionEnabled === false) return;
-			if (result.crawlerActive) {
-			    handleCrawlerStep();
-			} else if (result.autoAppend) {
-			    const tables = getAllTables();
-			    let targetTable = null;
-			    let maxRows = 0;
-			    tables.forEach(t => {
-				if (t.rows.length > maxRows && t.offsetParent !== null) {
-				    maxRows = t.rows.length;
-				    targetTable = t;
-				}
-			    });
-			    if (targetTable) {
-				const includeHeader = result.includeHeaderPreference || false;
-				copyTableToClipboard(targetTable, includeHeader, true).then(res => {
-				    if (res.success) {
-					showToast('✅ Automatycznie dołączono nowe dane', 'success', res.rowCount);
-					updateAllClipboardInfo();
-				    }
-				});
-			    }
-			} else {
-			    showToast('✅ Następna strona załadowana', 'success');
-			}
-		    });
-		    lastAjaxToastTime = Date.now();
-		}, 1000);
-	    }
+	    fetchPromise.then(function() {
+		runAutoAppendAfterDelay(FETCH_DELAY_MS);
+	    }).catch(function() {});
 	}
-	
-	return originalFetch.apply(this, args);
+	return fetchPromise;
     };
     
     // Intercept XMLHttpRequest
@@ -1306,49 +1476,21 @@ window.addEventListener('load', function() {
     };
     
     XMLHttpRequest.prototype.send = function(...args) {
-	const url = this._enduxUrl || '';
-	const method = this._enduxMethod || 'GET';
-	const isPaginationRequest = url.includes('page') || 
-				     url.includes('pagination') || 
-				     url.includes('ajax') ||
-				     (method.toUpperCase() !== 'GET' && url.includes('table'));
+	var url = this._enduxUrl || '';
+	var method = this._enduxMethod || 'GET';
+	var isPaginationRequest = url.includes('page') || url.includes('pagination') || url.includes('ajax') ||
+	    (method.toUpperCase() !== 'GET' && url.includes('table'));
 	
 	if (isPaginationRequest) {
-	    const now = Date.now();
-	    if (now - lastAjaxToastTime > AJAX_TOAST_COOLDOWN) {
-		setTimeout(function() {
-		    chrome.storage.local.get(['extensionEnabled', 'autoAppend', 'crawlerActive', 'includeHeaderPreference'], function(result) {
-			if (result.extensionEnabled === false) return;
-			if (result.crawlerActive) {
-			    handleCrawlerStep();
-			} else if (result.autoAppend) {
-			    const tables = getAllTables();
-			    let targetTable = null;
-			    let maxRows = 0;
-			    tables.forEach(t => {
-				if (t.rows.length > maxRows && t.offsetParent !== null) {
-				    maxRows = t.rows.length;
-				    targetTable = t;
-				}
-			    });
-			    if (targetTable) {
-				const includeHeader = result.includeHeaderPreference || false;
-				copyTableToClipboard(targetTable, includeHeader, true).then(res => {
-				    if (res.success) {
-					showToast('✅ Automatycznie dołączono nowe dane', 'success', res.rowCount);
-					updateAllClipboardInfo();
-				    }
-				});
-			    }
-			} else {
-			    showToast('✅ Następna strona załadowana', 'success');
-			}
-		    });
-		    lastAjaxToastTime = Date.now();
-		}, 1000);
+	    var onLoad = function() {
+		runAutoAppendAfterDelay(FETCH_DELAY_MS);
+	    };
+	    if (this.readyState === 4) {
+		onLoad();
+	    } else {
+		this.addEventListener('load', onLoad);
 	    }
 	}
-	
 	return originalXHRSend.apply(this, args);
     };
     
@@ -1387,39 +1529,21 @@ window.addEventListener('load', function() {
 	});
 	
 	if (tableChanged) {
-	    const now = Date.now();
-	    if (now - lastAjaxToastTime > AJAX_TOAST_COOLDOWN) {
-		setTimeout(function() {
-		    chrome.storage.local.get(['extensionEnabled', 'autoAppend', 'crawlerActive', 'includeHeaderPreference'], function(result) {
-			if (result.extensionEnabled === false) return;
-			if (result.crawlerActive) {
-			    handleCrawlerStep();
-			} else if (result.autoAppend) {
-			    const tables = getAllTables();
-			    let targetTable = null;
-			    let maxRows = 0;
-			    tables.forEach(t => {
-				if (t.rows.length > maxRows && t.offsetParent !== null) {
-				    maxRows = t.rows.length;
-				    targetTable = t;
-				}
-			    });
-			    if (targetTable) {
-				const includeHeader = result.includeHeaderPreference || false;
-				copyTableToClipboard(targetTable, includeHeader, true).then(res => {
-				    if (res.success) {
-					showToast('✅ Automatycznie dołączono nowe dane', 'success', res.rowCount);
-					updateAllClipboardInfo();
-				    }
-				});
-			    }
-			} else {
-			    showToast('✅ Następna strona załadowana', 'success');
-			}
-		    });
-		    lastAjaxToastTime = Date.now();
-		}, 500);
+	    // Quick timer: fires 50ms after first change, non-cancelling.
+	    // Captures page N before user clicks page N+1 during rapid navigation.
+	    if (!mutationQuickTimer) {
+		mutationQuickTimer = setTimeout(function() {
+		    mutationQuickTimer = null;
+		    runAutoAppendAfterDelay(0);
+		}, QUICK_DELAY_MS);
 	    }
+	    // Settle timer: debounced, fires after DOM stops changing.
+	    // Captures complete data when rows load one by one.
+	    if (mutationSettleTimer) clearTimeout(mutationSettleTimer);
+	    mutationSettleTimer = setTimeout(function() {
+		mutationSettleTimer = null;
+		runAutoAppendAfterDelay(0);
+	    }, SETTLE_DELAY_MS);
 	}
     });
     
