@@ -64,7 +64,7 @@ async function handleCrawlerStep() {
     console.log('EnduX Crawler: Sprawdzanie stanu...');
     // Check if crawler is active and has configuration defined
     const result = await new Promise(resolve => {
-        chrome.storage.local.get(['crawlerActive', 'crawlerClass', 'crawlerPaginator', 'includeHeaderPreference', 'extensionEnabled'], resolve);
+        chrome.storage.local.get(['crawlerActive', 'crawlerClass', 'crawlerPaginator', 'includeHeaderPreference', 'extensionEnabled', 'crawlerFirstPageHeader', 'crawlerIsFirstPage'], resolve);
     });
 
     if (!result.extensionEnabled || !result.crawlerActive || (!result.crawlerClass && !result.crawlerPaginator)) {
@@ -91,7 +91,16 @@ async function handleCrawlerStep() {
     }
 
     console.log('EnduX Crawler: Znaleziono tabelę, kopiowanie...');
-    const includeHeader = result.includeHeaderPreference || false;
+    // Determine whether to include header:
+    // - crawlerFirstPageHeader ON: first page gets header, all subsequent pages don't
+    // - crawlerFirstPageHeader OFF: use the global includeHeaderPreference
+    const isFirstPage = result.crawlerIsFirstPage !== false; // defaults to true
+    let includeHeader;
+    if (result.crawlerFirstPageHeader) {
+        includeHeader = isFirstPage;
+    } else {
+        includeHeader = result.includeHeaderPreference || false;
+    }
     const copyResult = await copyTableToClipboard(targetTable, includeHeader, true);
 
     if (copyResult.isDuplicate) {
@@ -110,6 +119,8 @@ async function handleCrawlerStep() {
     console.log('EnduX Crawler: Dane zapisane pomyślnie.');
     showToast('🚀 Crawler: Dane zapisane', 'success', copyResult.rowCount);
     updateAllClipboardInfo();
+    // Mark that we're no longer on the first page
+    if (isFirstPage) chrome.storage.local.set({ crawlerIsFirstPage: false });
 
     // 1. URL paginator (e.g. &page=1-100)
     if (result.crawlerPaginator && result.crawlerPaginator.includes('=') && result.crawlerPaginator.includes('-')) {
@@ -164,12 +175,41 @@ async function handleCrawlerStep() {
         try { nextButton = document.querySelector('.' + rawSelector.replace(/\s+/g, '.')); } catch (e) {}
     }
 
+    // If selector points to an inner SVG/path/span, walk up to the actual clickable element
+    if (nextButton) {
+        const CLICKABLE_TAGS = ['A', 'BUTTON', 'INPUT', 'SELECT'];
+        const isClickable = CLICKABLE_TAGS.includes(nextButton.tagName) ||
+            nextButton.getAttribute('role') === 'button' ||
+            nextButton.getAttribute('role') === 'link';
+        if (!isClickable) {
+            let node = nextButton.parentElement;
+            while (node && node !== document.body) {
+                if (CLICKABLE_TAGS.includes(node.tagName) ||
+                    node.getAttribute('role') === 'button' ||
+                    node.getAttribute('role') === 'link') {
+                    nextButton = node;
+                    break;
+                }
+                node = node.parentElement;
+            }
+        }
+    }
+
     console.log('EnduX Crawler: Przycisk Dalej (', rawSelector, '):', nextButton);
+
+    // SVG elements return null for offsetParent — check visibility differently
+    function isVisible(el) {
+        if (!el) return false;
+        if (el.offsetParent !== null) return true;
+        // SVG and some fixed/sticky elements have offsetParent === null but are still visible
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    }
 
     const canGoNext = nextButton &&
         !nextButton.classList.contains('disabled') &&
         !nextButton.hasAttribute('disabled') &&
-        nextButton.offsetParent !== null;
+        isVisible(nextButton);
 
     if (canGoNext) {
         console.log('EnduX Crawler: Kliknięcie za 1.5s...');
@@ -509,13 +549,27 @@ function generateCssSelector(el) {
     return selector;
 }
 
+// Walk up to the nearest interactive element so picker snaps to button/a instead of inner SVG/span
+function _nearestClickable(el) {
+    const CLICKABLE = ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA'];
+    let node = el;
+    while (node && node !== document.body) {
+        if (CLICKABLE.includes(node.tagName)) return node;
+        const role = node.getAttribute && node.getAttribute('role');
+        if (role === 'button' || role === 'link' || role === 'menuitem') return node;
+        node = node.parentElement;
+    }
+    return el; // fallback: original element
+}
+
 function _pickerMouseOver(e) {
     if (!_pickerActive || e.target === _pickerBanner) return;
-    if (_pickerHighlightEl && _pickerHighlightEl !== e.target) {
+    const target = _nearestClickable(e.target);
+    if (_pickerHighlightEl && _pickerHighlightEl !== target) {
         _pickerHighlightEl.style.outline = _pickerHighlightEl._enduxOrigOutline || '';
         _pickerHighlightEl.style.cursor = _pickerHighlightEl._enduxOrigCursor || '';
     }
-    _pickerHighlightEl = e.target;
+    _pickerHighlightEl = target;
     _pickerHighlightEl._enduxOrigOutline = _pickerHighlightEl.style.outline;
     _pickerHighlightEl._enduxOrigCursor = _pickerHighlightEl.style.cursor;
     _pickerHighlightEl.style.outline = '2px solid #007bff';
@@ -533,7 +587,7 @@ function _pickerClick(e) {
     if (!_pickerActive || e.target === _pickerBanner) return;
     e.preventDefault();
     e.stopPropagation();
-    const selector = generateCssSelector(e.target);
+    const selector = generateCssSelector(_nearestClickable(e.target));
     stopSelectorPicker();
     try {
         chrome.storage.local.set({ [_pickerStorageKey]: selector }, function() {

@@ -165,6 +165,17 @@ document.addEventListener('DOMContentLoaded', function () {
     const crawlerActiveCheckbox = document.getElementById('crawlerActive');
     const pickCrawlerClassBtn = document.getElementById('pickCrawlerClass');
 
+    const crawlerFirstPageHeaderCheckbox = document.getElementById('crawlerFirstPageHeader');
+
+    if (crawlerFirstPageHeaderCheckbox) {
+	chrome.storage.local.get(['crawlerFirstPageHeader'], function(result) {
+	    crawlerFirstPageHeaderCheckbox.checked = result.crawlerFirstPageHeader === true;
+	});
+	crawlerFirstPageHeaderCheckbox.addEventListener('change', function() {
+	    chrome.storage.local.set({ crawlerFirstPageHeader: crawlerFirstPageHeaderCheckbox.checked });
+	});
+    }
+
     if (crawlerClassInput && crawlerPaginatorInput && crawlerActiveCheckbox) {
 	// Load saved state
 	chrome.storage.local.get(['crawlerClass', 'crawlerPaginator', 'crawlerActive'], function(result) {
@@ -215,7 +226,7 @@ document.addEventListener('DOMContentLoaded', function () {
 		return;
 	    }
 
-	    chrome.storage.local.set({ crawlerActive: active }, function() {
+	    chrome.storage.local.set({ crawlerActive: active, crawlerIsFirstPage: true }, function() {
 		if (active) {
 		    showToast('🚀 Crawler uruchomiony', 'success');
 		    // Notify content script to start immediately if on a page with table
