@@ -14,6 +14,12 @@ function createContextMenu() {
 	    title: '📋 Dołącz tabelę\tShift+A',
 	    contexts: ['page', 'selection']
 	});
+	
+	chrome.contextMenus.create({
+	    id: 'endux-show-panels',
+	    title: 'Pokaż panel\tCtrl+Shift+E',
+	    contexts: ['page', 'selection']
+	});
     });
 }
 
@@ -45,24 +51,17 @@ chrome.runtime.onStartup.addListener(() => {
 
 // Handle context menu clicks
 chrome.contextMenus.onClicked.addListener((info, tab) => {
+    let message = null;
     if (info.menuItemId === 'endux-copy-table') {
-	// Send message to content script to copy table - includeHeader will be determined from preference
-	// Pass click coordinates to help find the correct table
-	chrome.tabs.sendMessage(tab.id, {
-	    action: 'copyTable',
-	    append: false,
-	    clickX: info.pageX,
-	    clickY: info.pageY
-	});
+        message = { action: 'copyTable', append: false, clickX: info.pageX, clickY: info.pageY };
     } else if (info.menuItemId === 'endux-append-table') {
-	// Send message to content script to append table - includeHeader will be determined from preference
-	// Pass click coordinates to help find the correct table
-	chrome.tabs.sendMessage(tab.id, {
-	    action: 'copyTable',
-	    append: true,
-	    clickX: info.pageX,
-	    clickY: info.pageY
-	});
+        message = { action: 'copyTable', append: true, clickX: info.pageX, clickY: info.pageY };
+    } else if (info.menuItemId === 'endux-show-panels') {
+        message = { action: 'showPanels' };
+    }
+    if (message) {
+        const options = info.frameId !== undefined ? { frameId: info.frameId } : {};
+        chrome.tabs.sendMessage(tab.id, message, options);
     }
 });
 
@@ -77,11 +76,12 @@ chrome.commands.onCommand.addListener((command) => {
 		    append: false
 		});
 	    } else if (command === 'append-table') {
-		// Append table - includeHeader will be determined from preference in content.js
 		chrome.tabs.sendMessage(tabs[0].id, {
 		    action: 'copyTable',
 		    append: true
 		});
+	    } else if (command === 'show-panels') {
+		chrome.tabs.sendMessage(tabs[0].id, { action: 'showPanels' });
 	    }
 	}
     });

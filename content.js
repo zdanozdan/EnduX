@@ -1,5 +1,12 @@
 // content.js
 
+// Return all tables in the current document only.
+// With all_frames: true, the script runs in each frame separately, so each frame
+// handles its own tables - avoids duplicate buttons when tables are in iframes.
+function getAllTables() {
+    return Array.from(document.querySelectorAll('table'));
+}
+
 // Function to create a simple hash from text (using djb2 algorithm)
 function createHash(text) {
     let hash = 5381;
@@ -56,8 +63,8 @@ async function handleCrawlerStep() {
     }
 
     console.log('EnduX Crawler: Próba znalezienia tabeli...');
-    // Find the best table to copy
-    const tables = document.querySelectorAll('table');
+    // Find the best table to copy (including tables in iframes)
+    const tables = getAllTables();
     let targetTable = null;
     let maxRows = 0;
     
@@ -442,6 +449,18 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
     } else if (request.action === 'startCrawler') {
         handleCrawlerStep();
         sendResponse({ success: true });
+    } else if (request.action === 'showPanels') {
+	chrome.storage.local.get(['extensionEnabled'], function(result) {
+	    if (result.extensionEnabled === false) {
+		sendResponse({ success: false, message: 'Rozszerzenie jest wyłączone' });
+		return;
+	    }
+	    removeExistingPanels();
+	    injectTablePanels();
+	    showToast('✅ Panele EnduX pokazane', 'success');
+	    sendResponse({ success: true });
+	});
+	return true;
     } else if (request.action === 'copyTable') {
 	// Check if extension is enabled
 	chrome.storage.local.get(['extensionEnabled', 'includeHeaderPreference'], function(result) {
@@ -455,8 +474,8 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
 	    // Use preference if includeHeader is not explicitly set
 	    const includeHeader = request.includeHeader !== undefined ? request.includeHeader : (result.includeHeaderPreference || false);
 	    
-	    // Find the best table to copy
-	    const tables = document.querySelectorAll('table');
+	    // Find the best table to copy (including tables in iframes)
+	    const tables = getAllTables();
 	    let targetTable = null;
 	    
 	    if (tables.length > 0) {
@@ -627,7 +646,7 @@ document.addEventListener('keydown', function(event) {
 	    event.stopPropagation();
 	    
 	    // Find the best table to copy
-	    const tables = document.querySelectorAll('table');
+	    const tables = getAllTables();
 	    let targetTable = null;
 	    
 	    if (tables.length > 0) {
@@ -731,7 +750,7 @@ document.addEventListener('keydown', function(event) {
 	    event.stopPropagation();
 	    
 	    // Find the best table to append
-	    const tables = document.querySelectorAll('table');
+	    const tables = getAllTables();
 	    let targetTable = null;
 	    
 	    if (tables.length > 0) {
@@ -831,23 +850,13 @@ document.addEventListener('keydown', function(event) {
     });
 }, true); // Use capture phase to catch events early
 
-// Wait until the page is fully loaded
-window.addEventListener('load', function() {
-    setTimeout(function() {
-	// Check if extension is enabled (default to true)
-	chrome.storage.local.get(['extensionEnabled'], function(result) {
-	    const isEnabled = result.extensionEnabled !== false; // Default to true if not set
-	    
-	    if (!isEnabled) {
-		return; // Don't add buttons if extension is disabled
-	    }
-	    
-	    //alert('Page loaded 5s delayed. EnduX ready');    
-	    
-	    const tables = document.querySelectorAll('table');
-	
-	// Loop through each table and apply a border (read frame)
-	tables.forEach(function(table) {
+function removeExistingPanels() {
+    document.querySelectorAll('[data-endux-panel]').forEach(function(el) { el.remove(); });
+}
+
+function injectTablePanels() {
+    const tables = getAllTables();
+    tables.forEach(function(table) {
 	    table.style.border = '1px solid blue';  // Apply a red border around each table
 	    table.style.padding = '5px';          // Optional: add some padding to the table
 	    
@@ -856,6 +865,7 @@ window.addEventListener('load', function() {
 	    
 	    // Create a container for button and checkbox
 	    const container = document.createElement('div');
+	    container.setAttribute('data-endux-panel', '1');
 	    container.style.marginBottom = '15px';
 	    container.style.padding = '12px';
 	    container.style.backgroundColor = '#f8f9fa';
@@ -909,10 +919,7 @@ window.addEventListener('load', function() {
 	    checkbox.type = 'checkbox';
 	    checkbox.id = 'includeHeader-' + Math.random().toString(36).substr(2, 9);
 	    
-	    // Load saved preference (default: don't include header)
-	    chrome.storage.local.get(['includeHeaderPreference'], function(result) {
-		checkbox.checked = result.includeHeaderPreference || false;
-	    });
+	    // Load saved preference (default: don't include header) - applied to both panels after clone
 	    
 	    checkbox.style.width = '18px';
 	    checkbox.style.height = '18px';
@@ -1082,7 +1089,7 @@ window.addEventListener('load', function() {
 		});
 	    }
 	    
-	    // Sync checkbox states between top and bottom containers
+	    // Sync checkbox states between top and bottom containers (global setting)
 	    if (checkboxBelow) {
 		checkboxBelow.addEventListener('change', function() {
 		    checkbox.checked = checkboxBelow.checked;
@@ -1090,8 +1097,15 @@ window.addEventListener('load', function() {
 		});
 		checkbox.addEventListener('change', function() {
 		    checkboxBelow.checked = checkbox.checked;
+		    chrome.storage.local.set({ includeHeaderPreference: checkbox.checked });
 		});
 	    }
+	    // Load saved preference and apply to both panels
+	    chrome.storage.local.get(['includeHeaderPreference'], function(result) {
+		const checked = result.includeHeaderPreference || false;
+		checkbox.checked = checked;
+		if (checkboxBelow) checkboxBelow.checked = checked;
+	    });
 	    
 	    if (appendCheckboxBelow) {
 		appendCheckboxBelow.addEventListener('change', function() {
@@ -1209,8 +1223,15 @@ window.addEventListener('load', function() {
 		}
 	    });
 	});
-	}); // Close chrome.storage.local.get callback
-    },2000);
+}
+
+// Wait until the page is fully loaded
+window.addEventListener('load', function() {
+    setTimeout(function() {
+	chrome.storage.local.get(['extensionEnabled'], function(result) {
+	    if (result.extensionEnabled === false) return;
+	    injectTablePanels();
+	});
     
     // Detect AJAX pagination
     let lastAjaxToastTime = 0;
@@ -1218,7 +1239,8 @@ window.addEventListener('load', function() {
     
     // Check if crawler should run on initial load
     setTimeout(() => {
-        chrome.storage.local.get(['crawlerActive'], function(res) {
+        chrome.storage.local.get(['extensionEnabled', 'crawlerActive'], function(res) {
+            if (res.extensionEnabled === false) return;
             if (res.crawlerActive) {
                 handleCrawlerStep();
             }
@@ -1238,22 +1260,20 @@ window.addEventListener('load', function() {
 	    const now = Date.now();
 	    if (now - lastAjaxToastTime > AJAX_TOAST_COOLDOWN) {
 		setTimeout(function() {
-		    chrome.storage.local.get(['autoAppend', 'crawlerActive', 'includeHeaderPreference'], function(result) {
+		    chrome.storage.local.get(['extensionEnabled', 'autoAppend', 'crawlerActive', 'includeHeaderPreference'], function(result) {
+			if (result.extensionEnabled === false) return;
 			if (result.crawlerActive) {
 			    handleCrawlerStep();
 			} else if (result.autoAppend) {
-			    // Find the best table to copy
-			    const tables = document.querySelectorAll('table');
+			    const tables = getAllTables();
 			    let targetTable = null;
 			    let maxRows = 0;
-			    
 			    tables.forEach(t => {
 				if (t.rows.length > maxRows && t.offsetParent !== null) {
 				    maxRows = t.rows.length;
 				    targetTable = t;
 				}
 			    });
-
 			    if (targetTable) {
 				const includeHeader = result.includeHeaderPreference || false;
 				copyTableToClipboard(targetTable, includeHeader, true).then(res => {
@@ -1297,22 +1317,20 @@ window.addEventListener('load', function() {
 	    const now = Date.now();
 	    if (now - lastAjaxToastTime > AJAX_TOAST_COOLDOWN) {
 		setTimeout(function() {
-		    chrome.storage.local.get(['autoAppend', 'crawlerActive', 'includeHeaderPreference'], function(result) {
+		    chrome.storage.local.get(['extensionEnabled', 'autoAppend', 'crawlerActive', 'includeHeaderPreference'], function(result) {
+			if (result.extensionEnabled === false) return;
 			if (result.crawlerActive) {
 			    handleCrawlerStep();
 			} else if (result.autoAppend) {
-			    // Find the best table to copy
-			    const tables = document.querySelectorAll('table');
+			    const tables = getAllTables();
 			    let targetTable = null;
 			    let maxRows = 0;
-			    
 			    tables.forEach(t => {
 				if (t.rows.length > maxRows && t.offsetParent !== null) {
 				    maxRows = t.rows.length;
 				    targetTable = t;
 				}
 			    });
-
 			    if (targetTable) {
 				const includeHeader = result.includeHeaderPreference || false;
 				copyTableToClipboard(targetTable, includeHeader, true).then(res => {
@@ -1369,26 +1387,23 @@ window.addEventListener('load', function() {
 	});
 	
 	if (tableChanged) {
-	    // Check if this looks like AJAX pagination (table changed but no page reload)
 	    const now = Date.now();
 	    if (now - lastAjaxToastTime > AJAX_TOAST_COOLDOWN) {
 		setTimeout(function() {
-		    chrome.storage.local.get(['autoAppend', 'crawlerActive', 'includeHeaderPreference'], function(result) {
+		    chrome.storage.local.get(['extensionEnabled', 'autoAppend', 'crawlerActive', 'includeHeaderPreference'], function(result) {
+			if (result.extensionEnabled === false) return;
 			if (result.crawlerActive) {
 			    handleCrawlerStep();
 			} else if (result.autoAppend) {
-			    // Find the best table to copy
-			    const tables = document.querySelectorAll('table');
+			    const tables = getAllTables();
 			    let targetTable = null;
 			    let maxRows = 0;
-			    
 			    tables.forEach(t => {
 				if (t.rows.length > maxRows && t.offsetParent !== null) {
 				    maxRows = t.rows.length;
 				    targetTable = t;
 				}
 			    });
-
 			    if (targetTable) {
 				const includeHeader = result.includeHeaderPreference || false;
 				copyTableToClipboard(targetTable, includeHeader, true).then(res => {
@@ -1413,4 +1428,5 @@ window.addEventListener('load', function() {
 	childList: true,
 	subtree: true
     });
+    }, 2000);
 });

@@ -65,28 +65,57 @@ document.addEventListener('DOMContentLoaded', function () {
 	    const isEnabled = result.extensionEnabled !== false; // Default to true if not set
 	    extensionEnabledCheckbox.checked = isEnabled;
 	    
-	    // Update context menu when popup opens
 	    updateContextMenu(isEnabled);
+	    setTabsEnabled(isEnabled);
 	});
 	
 	// Handle checkbox change
 	extensionEnabledCheckbox.addEventListener('change', function() {
 	    const isEnabled = extensionEnabledCheckbox.checked;
 	    
-	    // Save state to storage
 	    chrome.storage.local.set({ extensionEnabled: isEnabled }, function() {
 	    });
 	    
-	    // Update context menu
 	    updateContextMenu(isEnabled);
+	    setTabsEnabled(isEnabled);
 	    
-	    // Reload all tabs to apply changes
 	    chrome.tabs.query({}, function(tabs) {
 		tabs.forEach(function(tab) {
 		    chrome.tabs.reload(tab.id);
 		});
 	    });
 	});
+    }
+    
+    // Show/hide or enable/disable tabs based on extension state
+    function setTabsEnabled(isEnabled) {
+	const tabLinks = document.querySelectorAll('#myTab .nav-link');
+	const tabContent = document.getElementById('myTabContent');
+	if (!tabLinks.length || !tabContent) return;
+	
+	tabLinks.forEach(function(link) {
+	    if (isEnabled) {
+		link.classList.remove('disabled');
+		link.style.pointerEvents = '';
+		link.style.opacity = '';
+		link.setAttribute('tabindex', '0');
+	    } else {
+		link.classList.add('disabled');
+		link.style.pointerEvents = 'none';
+		link.style.opacity = '0.5';
+		link.setAttribute('tabindex', '-1');
+	    }
+	});
+	
+	const inputs = tabContent.querySelectorAll('input, button, select, textarea');
+	inputs.forEach(function(el) {
+	    el.disabled = !isEnabled;
+	});
+	
+	if (tabContent) {
+	    tabContent.style.pointerEvents = isEnabled ? '' : 'none';
+	    tabContent.style.opacity = isEnabled ? '1' : '0.6';
+	}
     }
     
     // Function to update context menu

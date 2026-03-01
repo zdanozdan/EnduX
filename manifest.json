@@ -28,8 +28,9 @@
     },
     "content_scripts": [
 	{
-	    "matches": ["<all_urls>"],  // Match all URLs (you can specify a specific domain, like "https://www.google.com/*")
-	    "js": ["content.js"]
+	    "matches": ["<all_urls>"],
+	    "js": ["content.js"],
+	    "all_frames": true
 	}
     ],
     "action": {
@@ -54,6 +55,13 @@
 		"mac": "Command+Shift+A"
 	    },
 	    "description": "Dołącz tabelę do schowka"
+	},
+	"show-panels": {
+	    "suggested_key": {
+		"default": "Ctrl+Shift+E",
+		"mac": "Command+Shift+E"
+	    },
+	    "description": "Pokaż panel"
 	}
     },
     "web_accessible_resources": [
