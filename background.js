@@ -20,6 +20,12 @@ function createContextMenu() {
 	    title: 'Pokaż panel\tCtrl+Shift+E',
 	    contexts: ['page', 'selection']
 	});
+
+	chrome.contextMenus.create({
+	    id: 'endux-show-grid-panel',
+	    title: 'Panel ekstrakcji (div)',
+	    contexts: ['page', 'selection']
+	});
     });
 }
 
@@ -58,6 +64,8 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
         message = { action: 'copyTable', append: true, clickX: info.pageX, clickY: info.pageY };
     } else if (info.menuItemId === 'endux-show-panels') {
         message = { action: 'showPanels' };
+    } else if (info.menuItemId === 'endux-show-grid-panel') {
+        message = { action: 'showGridExtractorPanel' };
     }
     if (message) {
         const options = info.frameId !== undefined ? { frameId: info.frameId } : {};

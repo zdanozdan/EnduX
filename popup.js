@@ -86,6 +86,22 @@ document.addEventListener('DOMContentLoaded', function () {
 	    });
 	});
     }
+
+    const showGridPanelBtn = document.getElementById('showGridExtractorPanelBtn');
+    if (showGridPanelBtn) {
+	showGridPanelBtn.addEventListener('click', function() {
+	    chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+		if (!tabs[0]) return;
+		chrome.tabs.sendMessage(tabs[0].id, { action: 'showGridExtractorPanel' }, function() {
+		    if (chrome.runtime.lastError) {
+			showToast('❌ Nie można uruchomić na tej stronie', 'error');
+			return;
+		    }
+		    window.close();
+		});
+	    });
+	});
+    }
     
     // Show/hide or enable/disable tabs based on extension state
     function setTabsEnabled(isEnabled) {
@@ -111,6 +127,10 @@ document.addEventListener('DOMContentLoaded', function () {
 	inputs.forEach(function(el) {
 	    el.disabled = !isEnabled;
 	});
+	const gridPanelBtn = document.getElementById('showGridExtractorPanelBtn');
+	if (gridPanelBtn) {
+	    gridPanelBtn.disabled = !isEnabled;
+	}
 	
 	if (tabContent) {
 	    tabContent.style.pointerEvents = isEnabled ? '' : 'none';

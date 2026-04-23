@@ -414,99 +414,20 @@ function showToast(message, type = 'success', rowCount = null) {
     }, 3000);
 }
 
-// Function to copy table to clipboard (with append support)
-function copyTableToClipboard(table, includeHeader, append = false, silentDuplicate = false) {
-    if (!table || table.tagName !== 'TABLE') {
-	return Promise.resolve({ success: false, rowCount: null });
-    }
-    
-    // Extract table data as text
-    let tableText = '';
-    
-    // Get thead rows if they exist
-    const thead = table.querySelector('thead');
-    const theadRows = thead ? thead.rows : [];
-    
-    // Get all tbody elements (tables can have multiple tbody)
-    const allTbodies = table.querySelectorAll('tbody');
-    let bodyRows = [];
-    
-    if (allTbodies.length > 0) {
-	// Collect rows from all tbody elements
-	for (let i = 0; i < allTbodies.length; i++) {
-	    const tbodyRows = Array.from(allTbodies[i].rows);
-	    bodyRows = bodyRows.concat(tbodyRows);
-	}
-    } else {
-	// If no tbody, get all rows and skip thead rows
-	bodyRows = Array.from(table.rows).filter((row, index) => {
-	    // If there's a thead, skip thead rows from table.rows
-	    return !thead || index >= theadRows.length;
-	});
-    }
-    
-    // Add thead rows if includeHeader is true
-    if (includeHeader && theadRows.length > 0) {
-	for (let i = 0; i < theadRows.length; i++) {
-	    const row = theadRows[i];
-	    const cells = [];
-	    
-	    for (let j = 0; j < row.cells.length; j++) {
-		cells.push(getPlainText(row.cells[j]));
-	    }
-	    
-	    tableText += cells.join('\t') + '\n';
-	}
-    }
-    
-    // Add body rows
-    for (let i = 0; i < bodyRows.length; i++) {
-	const row = bodyRows[i];
-	const cells = [];
-	
-	// Extract cell text from each cell in the row (removing all HTML tags)
-	for (let j = 0; j < row.cells.length; j++) {
-	    cells.push(getPlainText(row.cells[j]));
-	}
-	
-	// Join cells with tab separator (works well for pasting into spreadsheets)
-	tableText += cells.join('\t') + '\n';
-    }
-    
-    // Remove trailing newline from tableText for consistent comparison
-    tableText = tableText.replace(/\n$/, '');
-    
-    // Count rows in current table
-    let currentRowCount = bodyRows.length;
-    if (includeHeader && theadRows.length > 0) {
-	currentRowCount += theadRows.length;
-    }
-    
-    // Create hash for the table text - ALWAYS use only body rows (without header) for hash
-    // This ensures the same table is detected as duplicate regardless of includeHeader setting
-    let hashText = '';
-    for (let i = 0; i < bodyRows.length; i++) {
-	const row = bodyRows[i];
-	const cells = [];
-	
-	for (let j = 0; j < row.cells.length; j++) {
-	    cells.push(getPlainText(row.cells[j]));
-	}
-	
-	hashText += cells.join('\t') + '\n';
-    }
-    hashText = hashText.replace(/\n$/, '');
+// Copy TSV block (tabs between cells, newlines between rows). hashSourceText is used for duplicate detection only.
+function copyTsvTextToClipboard(fullText, hashSourceText, append, silentDuplicate) {
+    const tableText = (fullText || '').replace(/\n$/, '');
+    const hashText = (hashSourceText || '').replace(/\n$/, '');
     const tableHash = createHash(hashText);
-    
-    // If append mode, get existing clipboard content from storage
+    const currentRowCount = tableText.split('\n').filter(function(line) { return line.trim().length > 0; }).length;
+
     if (append) {
 	return new Promise(function(resolve) {
 	    chrome.storage.local.get(['accumulatedClipboard', 'preventDuplicates', 'clipboardHashes'], function(result) {
 		const existingContent = result.accumulatedClipboard || '';
 		const preventDuplicates = result.preventDuplicates === undefined ? true : result.preventDuplicates;
 		const existingHashes = result.clipboardHashes || [];
-		    
-		// Check for duplicates using hash if option is enabled
+
 		if (preventDuplicates && tableHash) {
 		    if (existingHashes.includes(tableHash)) {
 			if (!silentDuplicate) {
@@ -516,55 +437,104 @@ function copyTableToClipboard(table, includeHeader, append = false, silentDuplic
 			return;
 		    }
 		}
-		
-		// Add newline back for storage
+
 		const tableTextWithNewline = tableText + '\n';
 		const combinedText = existingContent + (existingContent ? '\n\n' : '') + tableTextWithNewline;
-		
-		// Add hash to the list
-		const updatedHashes = [...existingHashes, tableHash];
-		
-		// Count total rows in combined text
-		const totalRowCount = combinedText.split('\n').filter(line => line.trim().length > 0).length;
-		
-		// Save to storage (both content and hashes)
-		chrome.storage.local.set({ 
+		const updatedHashes = existingHashes.concat([tableHash]);
+		const totalRowCount = combinedText.split('\n').filter(function(line) { return line.trim().length > 0; }).length;
+
+		chrome.storage.local.set({
 		    accumulatedClipboard: combinedText,
 		    clipboardHashes: updatedHashes
 		}, function() {
-		    // Try to copy to clipboard, but don't fail if it's blocked
 		    navigator.clipboard.writeText(combinedText)
 			.then(function() {
 			    resolve({ success: true, rowCount: totalRowCount });
 			})
 			.catch(function() {
-			    // Schowek zablokowany (brak fokusu) - dane w pamięci rozszerzenia
-			    // Resolve with success anyway because data is in storage!
 			    resolve({ success: true, rowCount: totalRowCount, clipboardError: true });
 			});
 		});
 	    });
 	});
+    }
+
+    const tableTextWithNewline = tableText + '\n';
+    return new Promise(function(resolve) {
+	chrome.storage.local.set({
+	    accumulatedClipboard: tableTextWithNewline,
+	    clipboardHashes: [tableHash]
+	}, function() {
+	    navigator.clipboard.writeText(tableTextWithNewline)
+		.then(function() {
+		    resolve({ success: true, rowCount: currentRowCount });
+		})
+		.catch(function() {
+		    resolve({ success: true, rowCount: currentRowCount, clipboardError: true });
+		});
+	});
+    });
+}
+
+// Function to copy table to clipboard (with append support)
+function copyTableToClipboard(table, includeHeader, append = false, silentDuplicate = false) {
+    if (!table || table.tagName !== 'TABLE') {
+	return Promise.resolve({ success: false, rowCount: null });
+    }
+
+    let tableText = '';
+
+    const thead = table.querySelector('thead');
+    const theadRows = thead ? thead.rows : [];
+
+    const allTbodies = table.querySelectorAll('tbody');
+    let bodyRows = [];
+
+    if (allTbodies.length > 0) {
+	for (let i = 0; i < allTbodies.length; i++) {
+	    const tbodyRows = Array.from(allTbodies[i].rows);
+	    bodyRows = bodyRows.concat(tbodyRows);
+	}
     } else {
-	// Normal mode: just copy and save to storage (for future appends)
-	// Add newline back for storage
-	const tableTextWithNewline = tableText + '\n';
-	return new Promise(function(resolve) {
-	    chrome.storage.local.set({ 
-		accumulatedClipboard: tableTextWithNewline,
-		clipboardHashes: [tableHash]  // Start new hash list with this table
-	    }, function() {
-		navigator.clipboard.writeText(tableTextWithNewline)
-		    .then(function() {
-			resolve({ success: true, rowCount: currentRowCount });
-		    })
-		    .catch(function() {
-			// Schowek zablokowany - dane w pamięci rozszerzenia
-			resolve({ success: true, rowCount: currentRowCount, clipboardError: true });
-		    });
-	    });
+	bodyRows = Array.from(table.rows).filter(function(row, index) {
+	    return !thead || index >= theadRows.length;
 	});
     }
+
+    if (includeHeader && theadRows.length > 0) {
+	for (let i = 0; i < theadRows.length; i++) {
+	    const row = theadRows[i];
+	    const cells = [];
+	    for (let j = 0; j < row.cells.length; j++) {
+		cells.push(getPlainText(row.cells[j]));
+	    }
+	    tableText += cells.join('\t') + '\n';
+	}
+    }
+
+    for (let i = 0; i < bodyRows.length; i++) {
+	const row = bodyRows[i];
+	const cells = [];
+	for (let j = 0; j < row.cells.length; j++) {
+	    cells.push(getPlainText(row.cells[j]));
+	}
+	tableText += cells.join('\t') + '\n';
+    }
+
+    tableText = tableText.replace(/\n$/, '');
+
+    let hashText = '';
+    for (let i = 0; i < bodyRows.length; i++) {
+	const row = bodyRows[i];
+	const cells = [];
+	for (let j = 0; j < row.cells.length; j++) {
+	    cells.push(getPlainText(row.cells[j]));
+	}
+	hashText += cells.join('\t') + '\n';
+    }
+    hashText = hashText.replace(/\n$/, '');
+
+    return copyTsvTextToClipboard(tableText, hashText, append, silentDuplicate);
 }
 
 let _crawlerStepRunning = false; // Guard against concurrent crawler executions
@@ -718,6 +688,614 @@ function stopSelectorPicker() {
     document.removeEventListener('keydown',   _pickerKeyDown,   true);
 }
 
+// ── Grid extractor panel (div „tables”, e.g. MUI DataGrid) ───────────────────
+
+const GRID_PANEL_ID = 'endux-grid-extractor-root';
+const GRID_SELECTION_OUTLINE = '3px solid #f97316';
+const GRID_HEADER_OUTLINE = '3px solid #16a34a';
+
+let _gridPanelRoot = null;
+let _gridSelectedEl = null;
+let _gridHeaderRowEl = null;
+let _gridUndoStack = [];
+let _gridPickerActive = false;
+let _gridPickerHoverEl = null;
+
+function isInsideEnduxGridPanel(el) {
+    if (!el || !el.closest) return false;
+    return !!el.closest('#' + GRID_PANEL_ID);
+}
+
+function countElementChildren(el) {
+    let n = 0;
+    for (let c = el.firstElementChild; c; c = c.nextElementSibling) {
+	n++;
+    }
+    return n;
+}
+
+function rowDirectCellTexts(rowEl) {
+    const cells = [];
+    for (let c = rowEl.firstElementChild; c; c = c.nextElementSibling) {
+	cells.push(getPlainText(c));
+    }
+    return cells;
+}
+
+function rowMatchesTemplate(candidate, template) {
+    if (!candidate || candidate.nodeType !== 1 || !template || template.nodeType !== 1) return false;
+    if (candidate.tagName !== template.tagName) return false;
+    const tr = template.getAttribute('role');
+    const cr = candidate.getAttribute('role');
+    if (tr === 'row') {
+	return cr === 'row';
+    }
+    if (tr && cr && tr !== cr) return false;
+    return countElementChildren(candidate) === countElementChildren(template);
+}
+
+function getSiblingRows(templateRow) {
+    if (!templateRow || !templateRow.parentElement) return [];
+    const parent = templateRow.parentElement;
+    const out = [];
+    const children = parent.children;
+    for (let i = 0; i < children.length; i++) {
+	const n = children[i];
+	if (n.nodeType === 1 && rowMatchesTemplate(n, templateRow)) {
+	    out.push(n);
+	}
+    }
+    return out;
+}
+
+function padCellsToColumnCount(cells, colCount) {
+    const out = cells.slice(0, colCount);
+    while (out.length < colCount) {
+	out.push('');
+    }
+    return out;
+}
+
+function computeGridExportColumnCount() {
+    let n = 0;
+    if (_gridHeaderRowEl) {
+	n = Math.max(n, rowDirectCellTexts(_gridHeaderRowEl).length);
+    }
+    getGridDataRowsOnly().forEach(function(row) {
+	n = Math.max(n, rowDirectCellTexts(row).length);
+    });
+    if (n === 0 && _gridSelectedEl) {
+	n = rowDirectCellTexts(_gridSelectedEl).length;
+    }
+    return n;
+}
+
+function buildTsvFromRows(rows, colCount) {
+    return rows.map(function(row) {
+	return padCellsToColumnCount(rowDirectCellTexts(row), colCount).join('\t');
+    }).join('\n');
+}
+
+function clearGridHeaderVisual() {
+    if (!_gridHeaderRowEl) return;
+    const h = _gridHeaderRowEl;
+    if (h._enduxGridHeaderOrigOutline !== undefined) {
+	h.style.outline = h._enduxGridHeaderOrigOutline || '';
+	h.style.outlineOffset = h._enduxGridHeaderOrigOutlineOffset || '';
+	delete h._enduxGridHeaderOrigOutline;
+	delete h._enduxGridHeaderOrigOutlineOffset;
+    }
+    _gridHeaderRowEl = null;
+}
+
+function clearGridSelectionOutline() {
+    if (!_gridSelectedEl) return;
+    const el = _gridSelectedEl;
+    if (el !== _gridHeaderRowEl && el._enduxGridOrigOutline !== undefined) {
+	el.style.outline = el._enduxGridOrigOutline || '';
+	el.style.outlineOffset = el._enduxGridOrigOutlineOffset || '';
+	delete el._enduxGridOrigOutline;
+	delete el._enduxGridOrigOutlineOffset;
+    }
+    _gridSelectedEl = null;
+}
+
+function applyGridSelectionOutline(el) {
+    const prev = _gridSelectedEl;
+    if (prev && prev !== el) {
+	if (prev !== _gridHeaderRowEl && prev._enduxGridOrigOutline !== undefined) {
+	    prev.style.outline = prev._enduxGridOrigOutline || '';
+	    prev.style.outlineOffset = prev._enduxGridOrigOutlineOffset || '';
+	    delete prev._enduxGridOrigOutline;
+	    delete prev._enduxGridOrigOutlineOffset;
+	}
+    }
+    _gridSelectedEl = el;
+    if (!el) return;
+    if (el === _gridHeaderRowEl) {
+	return;
+    }
+    el._enduxGridOrigOutline = el.style.outline;
+    el._enduxGridOrigOutlineOffset = el.style.outlineOffset;
+    el.style.outline = GRID_SELECTION_OUTLINE;
+    el.style.outlineOffset = '2px';
+}
+
+function setGridHeaderFromCurrentSelection() {
+    if (!_gridSelectedEl) {
+	showToast('Najpierw wskaż wiersz nagłówka (Wskaż element)', 'warning');
+	return;
+    }
+    const el = _gridSelectedEl;
+    if (_gridHeaderRowEl === el) {
+	showToast('Ta linia jest już nagłówkiem', 'success');
+	return;
+    }
+    if (_gridHeaderRowEl && _gridHeaderRowEl !== el) {
+	clearGridHeaderVisual();
+    }
+    if (el._enduxGridOrigOutline !== undefined) {
+	el.style.outline = el._enduxGridOrigOutline || '';
+	el.style.outlineOffset = el._enduxGridOrigOutlineOffset || '';
+	delete el._enduxGridOrigOutline;
+	delete el._enduxGridOrigOutlineOffset;
+    }
+    el._enduxGridHeaderOrigOutline = el.style.outline;
+    el._enduxGridHeaderOrigOutlineOffset = el.style.outlineOffset;
+    el.style.outline = GRID_HEADER_OUTLINE;
+    el.style.outlineOffset = '2px';
+    _gridHeaderRowEl = el;
+    showToast('✓ Nagłówek zapisany — wskaż wiersz danych (Wskaż element)', 'success');
+    updateGridPreviewUI();
+}
+
+function clearGridHeaderFromPanel() {
+    if (!_gridHeaderRowEl) {
+	showToast('Nie ustawiono nagłówka', 'warning');
+	return;
+    }
+    const wasSel = _gridSelectedEl === _gridHeaderRowEl;
+    const el = _gridHeaderRowEl;
+    clearGridHeaderVisual();
+    if (wasSel && el && document.contains(el)) {
+	applyGridSelectionOutline(el);
+    }
+    showToast('Nagłówek usunięty', 'success');
+    updateGridPreviewUI();
+}
+
+function getGridDataRowsOnly() {
+    if (!_gridSelectedEl) return [];
+    const rows = getSiblingRows(_gridSelectedEl);
+    if (!_gridHeaderRowEl) return rows;
+    return rows.filter(function(r) { return r !== _gridHeaderRowEl; });
+}
+
+function stopGridPicker() {
+    _gridPickerActive = false;
+    document.body.style.cursor = '';
+    if (_gridPickerHoverEl) {
+	_gridPickerHoverEl.style.outline = _gridPickerHoverEl._enduxGridHoverOrigOutline || '';
+	_gridPickerHoverEl.style.cursor = _gridPickerHoverEl._enduxGridHoverOrigCursor || '';
+	_gridPickerHoverEl = null;
+    }
+    document.removeEventListener('mouseover', _gridPickerMouseOver, true);
+    document.removeEventListener('mouseout', _gridPickerMouseOut, true);
+    document.removeEventListener('click', _gridPickerClick, true);
+    document.removeEventListener('keydown', _gridPickerKeyDown, true);
+}
+
+function _gridPickerMouseOver(e) {
+    if (!_gridPickerActive) return;
+    const t = e.target;
+    if (!t || t.nodeType !== 1) return;
+    if (isInsideEnduxGridPanel(t)) return;
+    if (_gridPickerHoverEl && _gridPickerHoverEl !== t) {
+	_gridPickerHoverEl.style.outline = _gridPickerHoverEl._enduxGridHoverOrigOutline || '';
+	_gridPickerHoverEl.style.cursor = _gridPickerHoverEl._enduxGridHoverOrigCursor || '';
+    }
+    _gridPickerHoverEl = t;
+    _gridPickerHoverEl._enduxGridHoverOrigOutline = _gridPickerHoverEl.style.outline;
+    _gridPickerHoverEl._enduxGridHoverOrigCursor = _gridPickerHoverEl.style.cursor;
+    _gridPickerHoverEl.style.outline = '2px dashed #2563eb';
+    _gridPickerHoverEl.style.cursor = 'crosshair';
+}
+
+function _gridPickerMouseOut(e) {
+    if (!_gridPickerActive || !_gridPickerHoverEl) return;
+    const rel = e.relatedTarget;
+    if (rel && rel.nodeType === 1 && isInsideEnduxGridPanel(rel)) return;
+    _gridPickerHoverEl.style.outline = _gridPickerHoverEl._enduxGridHoverOrigOutline || '';
+    _gridPickerHoverEl.style.cursor = _gridPickerHoverEl._enduxGridHoverOrigCursor || '';
+    _gridPickerHoverEl = null;
+}
+
+function _gridPickerClick(e) {
+    if (!_gridPickerActive) return;
+    const t = e.target;
+    if (!t || t.nodeType !== 1) return;
+    if (isInsideEnduxGridPanel(t)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    stopGridPicker();
+    _gridUndoStack = [];
+    applyGridSelectionOutline(t);
+    updateGridPreviewUI();
+}
+
+function _gridPickerKeyDown(e) {
+    if (e.key === 'Escape') {
+	stopGridPicker();
+	showToast('Wybieranie anulowane', 'warning');
+    }
+}
+
+function startGridPicker() {
+    if (_gridPickerActive) stopGridPicker();
+    _gridPickerActive = true;
+    document.body.style.cursor = 'crosshair';
+    document.addEventListener('mouseover', _gridPickerMouseOver, true);
+    document.addEventListener('mouseout', _gridPickerMouseOut, true);
+    document.addEventListener('click', _gridPickerClick, true);
+    document.addEventListener('keydown', _gridPickerKeyDown, true);
+}
+
+function expandGridSelection() {
+    if (!_gridSelectedEl) {
+	showToast('Najpierw wskaż element', 'warning');
+	return;
+    }
+    const p = _gridSelectedEl.parentElement;
+    if (!p || p === document.documentElement || p === document.body) {
+	showToast('Brak wyższego elementu', 'warning');
+	return;
+    }
+    _gridUndoStack.push(_gridSelectedEl);
+    applyGridSelectionOutline(p);
+    updateGridPreviewUI();
+}
+
+function undoGridSelection() {
+    if (!_gridUndoStack.length) return;
+    const prev = _gridUndoStack.pop();
+    applyGridSelectionOutline(prev);
+    updateGridPreviewUI();
+}
+
+function updateGridPreviewUI() {
+    if (!_gridPanelRoot) return;
+    const statusEl = _gridPanelRoot.querySelector('[data-grid-status]');
+    const previewWrap = _gridPanelRoot.querySelector('[data-grid-preview]');
+    if (!statusEl || !previewWrap) return;
+    if (!_gridSelectedEl) {
+	statusEl.textContent = 'Podgląd · brak wyboru' + (_gridHeaderRowEl ? ' (nagłówek: zapisany)' : '');
+	previewWrap.innerHTML = '';
+	return;
+    }
+    const dataRows = getGridDataRowsOnly();
+    const previewRows = dataRows.slice(0, 5);
+    const colCount = computeGridExportColumnCount();
+    let statusText = 'Podgląd · kolumn: ' + colCount;
+    statusText += _gridHeaderRowEl ? ', nagłówek: tak' : ', nagłówek: nie';
+    statusText += ' · wierszy danych: ' + previewRows.length + ' (z ' + dataRows.length + ')';
+    statusEl.textContent = statusText;
+    const table = document.createElement('table');
+    table.style.borderCollapse = 'collapse';
+    table.style.width = '100%';
+    table.style.fontSize = '12px';
+    function appendCells(tr, texts, isHeader) {
+	texts.forEach(function(txt) {
+	    const td = document.createElement('td');
+	    td.textContent = txt;
+	    td.style.border = '1px solid #d4c4b8';
+	    td.style.padding = '4px 6px';
+	    td.style.maxWidth = '160px';
+	    td.style.overflow = 'hidden';
+	    td.style.textOverflow = 'ellipsis';
+	    td.style.whiteSpace = 'nowrap';
+	    if (isHeader) {
+		td.style.fontWeight = '700';
+		td.style.background = '#dcfce7';
+	    }
+	    tr.appendChild(td);
+	});
+    }
+    if (_gridHeaderRowEl) {
+	const trH = document.createElement('tr');
+	appendCells(trH, padCellsToColumnCount(rowDirectCellTexts(_gridHeaderRowEl), colCount), true);
+	table.appendChild(trH);
+    }
+    previewRows.forEach(function(r) {
+	const tr = document.createElement('tr');
+	appendCells(tr, padCellsToColumnCount(rowDirectCellTexts(r), colCount), false);
+	table.appendChild(tr);
+    });
+    previewWrap.innerHTML = '';
+    previewWrap.appendChild(table);
+}
+
+function copyGridFromPanel(append) {
+    if (!_gridSelectedEl) {
+	showToast('Najpierw wskaż wiersz danych (div)', 'warning');
+	return;
+    }
+    const dataRows = getGridDataRowsOnly();
+    if (dataRows.length === 0) {
+	showToast('Brak wierszy danych — wskaż wiersz szablonu lub usuń nagłówek z listy', 'warning');
+	return;
+    }
+    const colCount = computeGridExportColumnCount();
+    if (colCount === 0) {
+	showToast('Brak kolumn do eksportu', 'warning');
+	return;
+    }
+    const bodyText = buildTsvFromRows(dataRows, colCount).replace(/\n$/, '');
+    let fullText = bodyText;
+    if (_gridHeaderRowEl) {
+	const headerLine = padCellsToColumnCount(rowDirectCellTexts(_gridHeaderRowEl), colCount).join('\t');
+	fullText = headerLine + '\n' + bodyText;
+    }
+    copyTsvTextToClipboard(fullText, bodyText, append, false).then(function(res) {
+	if (res.isDuplicate) return;
+	if (res.success) {
+	    showToast(append ? '📋 Siatka dołączona do schowka' : '📋 Siatka skopiowana', 'success', res.rowCount);
+	    updateAllClipboardInfo();
+	}
+    });
+}
+
+function removeGridExtractorPanel() {
+    stopGridPicker();
+    clearGridSelectionOutline();
+    clearGridHeaderVisual();
+    _gridUndoStack = [];
+    const el = document.getElementById(GRID_PANEL_ID);
+    if (el) el.remove();
+    _gridPanelRoot = null;
+}
+
+function injectGridExtractorPanel() {
+    removeGridExtractorPanel();
+
+    const root = document.createElement('div');
+    root.id = GRID_PANEL_ID;
+    root.setAttribute('data-endux-panel', 'grid');
+    _gridPanelRoot = root;
+    Object.assign(root.style, {
+	position: 'fixed',
+	left: '0',
+	right: '0',
+	bottom: '0',
+	zIndex: '2147483646',
+	fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+	boxShadow: '0 -8px 24px rgba(0,0,0,0.18)',
+	borderTop: '1px solid #e8d5c4',
+	background: '#fff5eb',
+	display: 'flex',
+	flexDirection: 'column',
+	maxHeight: '42vh'
+    });
+
+    const header = document.createElement('div');
+    Object.assign(header.style, {
+	display: 'flex',
+	alignItems: 'center',
+	justifyContent: 'space-between',
+	padding: '8px 12px',
+	borderBottom: '1px solid #e8d5c4',
+	background: '#ffecd9',
+	flexShrink: '0'
+    });
+    const title = document.createElement('span');
+    title.textContent = 'EnduX · ekstrakcja siatki (div)';
+    title.style.fontWeight = '600';
+    title.style.fontSize = '14px';
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.textContent = '✕';
+    closeBtn.setAttribute('aria-label', 'Zamknij');
+    Object.assign(closeBtn.style, {
+	border: 'none',
+	background: 'transparent',
+	cursor: 'pointer',
+	fontSize: '18px',
+	lineHeight: '1',
+	padding: '4px 8px'
+    });
+    closeBtn.addEventListener('click', function() {
+	removeGridExtractorPanel();
+    });
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+
+    const body = document.createElement('div');
+    Object.assign(body.style, {
+	display: 'flex',
+	flex: '1',
+	minHeight: '0',
+	gap: '16px',
+	padding: '12px',
+	overflow: 'hidden'
+    });
+
+    const left = document.createElement('div');
+    Object.assign(left.style, {
+	flex: '0 0 38%',
+	maxWidth: '420px',
+	display: 'flex',
+	flexDirection: 'column',
+	gap: '10px',
+	fontSize: '13px',
+	color: '#444'
+    });
+    const help = document.createElement('p');
+    help.style.margin = '0';
+    help.innerHTML = 'Najpierw <strong>Wskaż element</strong> na wierszu nagłówka i <strong>Ustaw nagłówek</strong>. Potem ponownie <strong>Wskaż element</strong> na wierszu danych. <strong>Rozwiń</strong> / <strong>Cofnij</strong> pomagają trafić w cały wiersz (div).';
+    left.appendChild(help);
+
+    const btnRow = document.createElement('div');
+    Object.assign(btnRow.style, { display: 'flex', flexWrap: 'wrap', gap: '8px' });
+
+    const pickBtn = document.createElement('button');
+    pickBtn.type = 'button';
+    pickBtn.textContent = 'Wskaż element';
+    Object.assign(pickBtn.style, {
+	padding: '8px 14px',
+	borderRadius: '6px',
+	border: 'none',
+	background: '#2563eb',
+	color: '#fff',
+	fontWeight: '600',
+	cursor: 'pointer',
+	fontSize: '13px'
+    });
+
+    const expandBtn = document.createElement('button');
+    expandBtn.type = 'button';
+    expandBtn.textContent = 'Rozwiń (parent)';
+    Object.assign(expandBtn.style, {
+	padding: '8px 14px',
+	borderRadius: '6px',
+	border: '1px solid #c4a894',
+	background: '#fff',
+	color: '#333',
+	fontWeight: '600',
+	cursor: 'pointer',
+	fontSize: '13px'
+    });
+
+    const undoBtn = document.createElement('button');
+    undoBtn.type = 'button';
+    undoBtn.textContent = 'Cofnij';
+    Object.assign(undoBtn.style, {
+	padding: '8px 14px',
+	borderRadius: '6px',
+	border: '1px solid #c4a894',
+	background: '#fff',
+	color: '#333',
+	fontWeight: '600',
+	cursor: 'pointer',
+	fontSize: '13px'
+    });
+
+    pickBtn.addEventListener('click', function() {
+	startGridPicker();
+	showToast('Tryb wskazywania: kliknij element na stronie', 'success');
+    });
+    expandBtn.addEventListener('click', expandGridSelection);
+    undoBtn.addEventListener('click', undoGridSelection);
+
+    btnRow.appendChild(pickBtn);
+    btnRow.appendChild(expandBtn);
+    btnRow.appendChild(undoBtn);
+    left.appendChild(btnRow);
+
+    const headerRow = document.createElement('div');
+    Object.assign(headerRow.style, { display: 'flex', flexWrap: 'wrap', gap: '8px' });
+    const setHeaderBtn = document.createElement('button');
+    setHeaderBtn.type = 'button';
+    setHeaderBtn.textContent = 'Ustaw nagłówek';
+    Object.assign(setHeaderBtn.style, {
+	padding: '8px 14px',
+	borderRadius: '6px',
+	border: '1px solid #15803d',
+	background: '#f0fdf4',
+	color: '#14532d',
+	fontWeight: '600',
+	cursor: 'pointer',
+	fontSize: '13px'
+    });
+    setHeaderBtn.addEventListener('click', setGridHeaderFromCurrentSelection);
+    const clearHeaderBtn = document.createElement('button');
+    clearHeaderBtn.type = 'button';
+    clearHeaderBtn.textContent = 'Usuń nagłówek';
+    Object.assign(clearHeaderBtn.style, {
+	padding: '8px 14px',
+	borderRadius: '6px',
+	border: '1px solid #c4a894',
+	background: '#fff',
+	color: '#666',
+	fontWeight: '500',
+	cursor: 'pointer',
+	fontSize: '13px'
+    });
+    clearHeaderBtn.addEventListener('click', clearGridHeaderFromPanel);
+    headerRow.appendChild(setHeaderBtn);
+    headerRow.appendChild(clearHeaderBtn);
+    left.appendChild(headerRow);
+
+    const appendCb = document.createElement('input');
+    appendCb.type = 'checkbox';
+    appendCb.id = 'endux-grid-append-' + Math.random().toString(36).substr(2, 8);
+    const appendLbl = document.createElement('label');
+    appendLbl.htmlFor = appendCb.id;
+    appendLbl.textContent = 'Dołącz do schowka (jak „Dołącz tabelę”)';
+    appendLbl.style.cursor = 'pointer';
+    appendLbl.style.fontSize = '13px';
+
+    const copyRow = document.createElement('div');
+    Object.assign(copyRow.style, {
+	display: 'flex',
+	alignItems: 'center',
+	gap: '8px',
+	flexWrap: 'wrap'
+    });
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.textContent = '📋 Kopiuj siatkę';
+    Object.assign(copyBtn.style, {
+	padding: '10px 18px',
+	borderRadius: '6px',
+	border: 'none',
+	background: '#ea580c',
+	color: '#fff',
+	fontWeight: '600',
+	cursor: 'pointer',
+	fontSize: '14px'
+    });
+    copyBtn.addEventListener('click', function() {
+	copyGridFromPanel(appendCb.checked);
+    });
+
+    copyRow.appendChild(copyBtn);
+    copyRow.appendChild(appendCb);
+    copyRow.appendChild(appendLbl);
+    left.appendChild(copyRow);
+
+    const right = document.createElement('div');
+    Object.assign(right.style, {
+	flex: '1',
+	minWidth: '0',
+	display: 'flex',
+	flexDirection: 'column',
+	gap: '8px',
+	overflow: 'auto'
+    });
+    const status = document.createElement('div');
+    status.setAttribute('data-grid-status', '1');
+    status.style.fontWeight = '600';
+    status.style.fontSize = '13px';
+    status.textContent = 'Podgląd · brak wyboru';
+
+    const preview = document.createElement('div');
+    preview.setAttribute('data-grid-preview', '1');
+    preview.style.overflow = 'auto';
+    preview.style.flex = '1';
+    preview.style.background = '#fff';
+    preview.style.border = '1px solid #e8d5c4';
+    preview.style.borderRadius = '6px';
+    preview.style.padding = '6px';
+
+    right.appendChild(status);
+    right.appendChild(preview);
+
+    body.appendChild(left);
+    body.appendChild(right);
+    root.appendChild(header);
+    root.appendChild(body);
+    document.body.appendChild(root);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
@@ -746,6 +1324,17 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
 	    removeExistingPanels();
 	    injectTablePanels();
 	    showToast('✅ Panele EnduX pokazane', 'success');
+	    sendResponse({ success: true });
+	});
+	return true;
+    } else if (request.action === 'showGridExtractorPanel') {
+	chrome.storage.local.get(['extensionEnabled'], function(result) {
+	    if (result.extensionEnabled === false) {
+		sendResponse({ success: false, message: 'Rozszerzenie jest wyłączone' });
+		return;
+	    }
+	    injectGridExtractorPanel();
+	    showToast('Panel ekstrakcji (div)', 'success');
 	    sendResponse({ success: true });
 	});
 	return true;
