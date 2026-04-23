@@ -17,21 +17,97 @@ function createHash(text) {
     return Math.abs(hash).toString(36);
 }
 
-// Function to extract plain text from HTML element, removing all HTML tags
+// Separator between segments in a table cell (block/<br> boundaries, or adjacent elements
+// that both yield text, e.g. chip spans). Must stay on one line so clipboard-viewer row
+// splitting on \n stays valid.
+const CELL_INLINE_BLOCK_SEP = ' | ';
+
+const BLOCK_HTML_TAGS = new Set([
+    'ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'BODY', 'CANVAS', 'CENTER',
+    'DD', 'DIR', 'DIV', 'DL', 'DT', 'FIELDSET', 'FIGCAPTION', 'FIGURE',
+    'FOOTER', 'FORM', 'FRAME', 'FRAMESET', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+    'HEADER', 'HGROUP', 'HR', 'HTML', 'ISINDEX', 'LI', 'MAIN', 'MENU',
+    'NAV', 'NOFRAMES', 'OL', 'P', 'PRE', 'SECTION', 'TABLE', 'TBODY', 'TD',
+    'TFOOT', 'TH', 'THEAD', 'TR', 'UL', 'VIDEO'
+]);
+
+const SKIP_CELL_TEXT_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT']);
+
+function isBlockBoundaryNode(node) {
+    if (!node) return false;
+    if (node.nodeType === Node.ELEMENT_NODE) {
+	if (node.tagName === 'BR') return true;
+	return BLOCK_HTML_TAGS.has(node.tagName);
+    }
+    return false;
+}
+
+function isBlockBoundaryBetween(prevSibling, nextSibling) {
+    return isBlockBoundaryNode(prevSibling) || isBlockBoundaryNode(nextSibling);
+}
+
+function shouldInsertCellSepBetweenSiblings(prevSibling, nextSibling) {
+    if (isBlockBoundaryBetween(prevSibling, nextSibling)) return true;
+    if (prevSibling.nodeType !== Node.ELEMENT_NODE || nextSibling.nodeType !== Node.ELEMENT_NODE) {
+	return false;
+    }
+    const p = prevSibling.tagName;
+    const n = nextSibling.tagName;
+    if (SKIP_CELL_TEXT_TAGS.has(p) || SKIP_CELL_TEXT_TAGS.has(n)) return false;
+    return true;
+}
+
+function normalizeCellTextChunk(s) {
+    return s.replace(/\s+/g, ' ');
+}
+
+function collapseCellSeparators(s) {
+    const esc = CELL_INLINE_BLOCK_SEP.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const multi = new RegExp('(?:' + esc + ')+', 'g');
+    return s.replace(multi, CELL_INLINE_BLOCK_SEP).trim();
+}
+
+function fragmentTextFromNode(node) {
+    if (!node) return '';
+
+    if (node.nodeType === Node.TEXT_NODE) {
+	return normalizeCellTextChunk(node.textContent);
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+    const tag = node.tagName;
+    if (SKIP_CELL_TEXT_TAGS.has(tag)) return '';
+    if (tag === 'BR') return '';
+
+    return joinCellChildFragments(node);
+}
+
+function joinCellChildFragments(parent) {
+    const children = parent.childNodes;
+    let out = '';
+    for (let i = 0; i < children.length; i++) {
+	const child = children[i];
+	const frag = fragmentTextFromNode(child);
+	if (i > 0 && shouldInsertCellSepBetweenSiblings(children[i - 1], child)) {
+	    if (out.length > 0 && frag.length > 0) {
+		out += CELL_INLINE_BLOCK_SEP;
+	    }
+	}
+	out += frag;
+    }
+    return out;
+}
+
+// Plain text from a table cell (or any element): block / <br> / adjacent elements with text
+// get " | " between segments.
 function getPlainText(element) {
     if (!element) return '';
-    
-    // Create a temporary element to extract text
+
     const temp = document.createElement('div');
     temp.innerHTML = element.innerHTML;
-    
-    // Get text content (this removes all HTML tags)
-    let text = temp.textContent || temp.innerText || '';
-    
-    // Clean up: replace multiple whitespaces with single space, remove leading/trailing whitespace
-    text = text.replace(/\s+/g, ' ').trim();
-    
-    return text;
+
+    return collapseCellSeparators(joinCellChildFragments(temp));
 }
 
 // Global function to update all clipboard info elements on the page
