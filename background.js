@@ -23,7 +23,7 @@ function createContextMenu() {
 
 	chrome.contextMenus.create({
 	    id: 'endux-show-grid-panel',
-	    title: 'Panel ekstrakcji (div)',
+	    title: 'Panel ekstrakcji wyników',
 	    contexts: ['page', 'selection']
 	});
     });
