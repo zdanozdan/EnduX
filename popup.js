@@ -146,14 +146,24 @@ document.addEventListener('DOMContentLoaded', function () {
 	});
     }
     
-    // Handle clear clipboard button
-    const clearClipboardButton = document.getElementById('clearClipboard');
-    if (clearClipboardButton) {
-	clearClipboardButton.addEventListener('click', function() {
-	    chrome.storage.local.remove(['accumulatedClipboard', 'clipboardHashes'], function() {
-		clearClipboardButton.textContent = '✓ Wyczyszczono';
+    const resetAllBtn = document.getElementById('resetAllEnduxSettings');
+    if (resetAllBtn) {
+	resetAllBtn.addEventListener('click', function() {
+	    resetAllBtn.disabled = true;
+	    chrome.runtime.sendMessage({ action: 'resetEnduxAllSettings' }, function(response) {
+		resetAllBtn.disabled = false;
+		if (chrome.runtime.lastError || !response || !response.success) {
+		    var errMsg =
+			(chrome.runtime.lastError && chrome.runtime.lastError.message) ||
+			(response && response.message) ||
+			'błąd';
+		    showToast('Nie udało się zresetować: ' + errMsg, 'error');
+		    return;
+		}
+		showToast('Przywrócono ustawienia domyślne EnduX', 'success');
+		resetAllBtn.textContent = '✓ Gotowe';
 		setTimeout(function() {
-		    clearClipboardButton.textContent = 'Wyczyść schowek';
+		    resetAllBtn.textContent = 'Wyczyść wszystko';
 		}, 2000);
 	    });
 	});

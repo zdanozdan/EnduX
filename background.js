@@ -1,5 +1,60 @@
 // background.js
 
+/** Muszą być zgodne z content.js (persistencja panelu siatki / wyboru). */
+const ENDUX_GRID_SELECTION_STORAGE_KEY = 'enduxGridPanelSelectionByPage';
+const ENDUX_GRID_PANEL_UI_STORAGE_KEY = 'enduxGridExtractorPanelUiByOrigin';
+const ENDUX_GRID_PANEL_LEFT_WIDTH_KEY = 'enduxGridPanelLeftWidthPxByOrigin';
+const ENDUX_GRID_PANEL_HEIGHT_KEY = 'enduxGridPanelHeightPxByOrigin';
+
+/** Domyślna konfiguracja po „Wyczyść wszystko” w popupie (login i włączenie rozszerzenia zostają). */
+function enduxBuildFreshSettingsPayload(preserved) {
+    var extOn = preserved && preserved.extensionEnabled !== false;
+    var out = {
+	extensionEnabled: extOn,
+	preventDuplicates: true,
+	inlineTableControlPanels: true,
+	includeHeaderPreference: true,
+	autoAppend: false,
+	crawlerActive: false,
+	crawlerIsFirstPage: true,
+	crawlerClass: '',
+	crawlerPaginator: '',
+	crawlerFirstPageHeader: false,
+	gridSubtableEnabled: false,
+	gridSubtableExpandRelative: '',
+	gridSubtableBackSelector: '',
+	gridSubtableUseHistoryBack: false,
+	gridSubtableFields: [],
+	accumulatedClipboard: '',
+	clipboardHashes: []
+    };
+    out[ENDUX_GRID_SELECTION_STORAGE_KEY] = {};
+    out[ENDUX_GRID_PANEL_UI_STORAGE_KEY] = {};
+    out[ENDUX_GRID_PANEL_LEFT_WIDTH_KEY] = {};
+    out[ENDUX_GRID_PANEL_HEIGHT_KEY] = {};
+    if (preserved && preserved.loginName) out.loginName = preserved.loginName;
+    if (preserved && preserved.loginPassword) out.loginPassword = preserved.loginPassword;
+    return out;
+}
+
+function enduxBroadcastStorageResetToTabs() {
+    chrome.tabs.query({}, function(tabs) {
+	if (!tabs || !tabs.length) return;
+	tabs.forEach(function(tab) {
+	    if (!tab || tab.id == null) return;
+	    chrome.tabs.sendMessage(
+		tab.id,
+		{ action: 'enduxApplyStorageReset' },
+		function() {
+		    if (chrome.runtime.lastError) {
+			/* brak content scriptu — ignoruj */
+		    }
+		}
+	    );
+	});
+    });
+}
+
 // Function to create context menu items
 function createContextMenu() {
     chrome.contextMenus.removeAll(() => {
@@ -203,5 +258,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 	});
 	
 	return true; // Keep message channel open for async response
+    } else if (request.action === 'resetEnduxAllSettings') {
+	chrome.storage.local.get(['extensionEnabled', 'loginName', 'loginPassword'], function(keep) {
+	    if (chrome.runtime.lastError) {
+		sendResponse({ success: false, message: chrome.runtime.lastError.message });
+		return;
+	    }
+	    chrome.storage.local.clear(function() {
+		if (chrome.runtime.lastError) {
+		    sendResponse({ success: false, message: chrome.runtime.lastError.message });
+		    return;
+		}
+		chrome.storage.local.set(enduxBuildFreshSettingsPayload(keep || {}), function() {
+		    if (chrome.runtime.lastError) {
+			sendResponse({ success: false, message: chrome.runtime.lastError.message });
+			return;
+		    }
+		    enduxBroadcastStorageResetToTabs();
+		    sendResponse({ success: true });
+		});
+	    });
+	});
+	return true;
     }
 });

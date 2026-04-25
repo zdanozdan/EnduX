@@ -67,6 +67,27 @@ function collapseCellSeparators(s) {
     return s.replace(multi, CELL_INLINE_BLOCK_SEP).trim();
 }
 
+/**
+ * Usuwa puste segmenty między separatorami komórki (` | `) oraz osierocone `|` na brzegach
+ * (np. ikona bez tekstu zostawiała „ | ” albo samo „|” na początku/końcu).
+ */
+function stripEmptyCellPipeSegments(s) {
+    if (s == null) return '';
+    var t = String(s);
+    if (!t) return '';
+    var sep = CELL_INLINE_BLOCK_SEP;
+    var parts = t.split(sep);
+    var out = [];
+    for (var i = 0; i < parts.length; i++) {
+	var p = parts[i] == null ? '' : String(parts[i]).trim();
+	if (p.length) out.push(p);
+    }
+    t = out.join(sep);
+    /* Pojedyncze | (bez spacji jak w CELL_INLINE_BLOCK_SEP) na brzegach po scaleniu */
+    t = t.replace(/^(?:\s*\|\s*)+/, '').replace(/(?:\s*\|\s*)+$/, '');
+    return t.trim();
+}
+
 function fragmentTextFromNode(node) {
     if (!node) return '';
 
@@ -107,7 +128,7 @@ function getPlainText(element) {
     const temp = document.createElement('div');
     temp.innerHTML = element.innerHTML;
 
-    return collapseCellSeparators(joinCellChildFragments(temp));
+    return stripEmptyCellPipeSegments(collapseCellSeparators(joinCellChildFragments(temp)));
 }
 
 // Global function to update all clipboard info elements on the page
@@ -124,6 +145,7 @@ function updateAllClipboardInfo() {
 	const allClipboardInfos = document.querySelectorAll('[id^="clipboard-info-"]');
 	allClipboardInfos.forEach(function(element) {
 	    element.textContent = element.hasAttribute('data-endux-grid-clipboard') ? infoTextGrid : infoText;
+	    element.style.color = ENDUX_CLIPBOARD_ROW_COUNT_COLOR;
 	});
     });
 }
@@ -141,7 +163,15 @@ async function handleCrawlerStep() {
     console.log('EnduX Crawler: Sprawdzanie stanu...');
     // Check if crawler is active and has configuration defined
     const result = await new Promise(resolve => {
-        chrome.storage.local.get(['crawlerActive', 'crawlerClass', 'crawlerPaginator', 'includeHeaderPreference', 'extensionEnabled', 'crawlerFirstPageHeader', 'crawlerIsFirstPage'], resolve);
+        chrome.storage.local.get([
+	    'crawlerActive',
+	    'crawlerClass',
+	    'crawlerPaginator',
+	    'includeHeaderPreference',
+	    'extensionEnabled',
+	    'crawlerFirstPageHeader',
+	    'crawlerIsFirstPage'
+	].concat(ENDUX_SUBTABLE_STORAGE_KEYS), resolve);
     });
 
     if (!result.extensionEnabled || !result.crawlerActive || (!result.crawlerClass && !result.crawlerPaginator)) {
@@ -154,6 +184,10 @@ async function handleCrawlerStep() {
     if (_gridPanelRoot && _gridSelectedEl && !_gridSelectedEl.isConnected) {
 	tryRebindGridSelectionFromCachedSelectors();
     }
+    if (_gridPanelRoot && _gridSelectedEl && _gridSelectedEl.isConnected && !isInsideEnduxGridPanel(_gridSelectedEl)) {
+	await enduxMaybeWalkSubtableRows(result);
+    }
+    enduxSyncSubtableExportCacheFromSlice(result);
     const gridPayload = enduxGetGridPanelAutoAppendPayload();
     const isFirstPage = result.crawlerIsFirstPage !== false; // defaults to true
 
@@ -593,6 +627,8 @@ let _crawlerStepRunning = false; // Guard against concurrent crawler executions
 
 // Używane przez picker selektora i panel siatki (musi być przed startSelectorPicker).
 const GRID_PANEL_ID = 'endux-grid-extractor-root';
+const ENDUX_CLIPBOARD_ROW_COUNT_COLOR = '#dc2626';
+const ENDUX_CLIPBOARD_ROW_COUNT_HOVER = '#b91c1c';
 
 // ── Selector Picker ──────────────────────────────────────────────────────────
 
@@ -600,6 +636,575 @@ let _pickerActive = false;
 let _pickerHighlightEl = null;
 let _pickerBanner = null;
 let _pickerStorageKey = 'crawlerClass';
+let _pickerBannerCustomText = '';
+
+let _subtableExpandPickerActive = false;
+let _subtableExpandPickerHoverEl = null;
+let _subtableExpandPickerBanner = null;
+const ENDUX_SUBTABLE_EXPAND_BANNER_ID = 'endux-subtable-expand-banner';
+
+let _subtableFieldPickerActive = false;
+let _subtableFieldPickerHoverEl = null;
+let _subtableFieldPickerBanner = null;
+const ENDUX_SUBTABLE_FIELD_BANNER_ID = 'endux-subtable-field-banner';
+
+const ENDUX_SUBTABLE_STEP_MS = 450;
+let _enduxSubtableDebugConfirm = false;
+const ENDUX_SUBTABLE_STORAGE_KEYS = [
+    'gridSubtableEnabled',
+    'gridSubtableExpandRelative',
+    'gridSubtableBackSelector',
+    'gridSubtableUseHistoryBack',
+    'gridSubtableDebugConfirm',
+    'gridSubtableFields'
+];
+
+/**
+ * Po pełnym resecie ustawień (popup „Wyczyść wszystko”): zamknij pickery/panel,
+ * odśwież cache podtabeli i panele tabel z aktualnego storage.
+ */
+function enduxApplyFullSettingsReset() {
+    try {
+	if (typeof stopSelectorPicker === 'function') stopSelectorPicker();
+    } catch (e1) {}
+    try {
+	if (typeof stopGridPicker === 'function') stopGridPicker();
+    } catch (e2) {}
+    try {
+	if (typeof stopSubtableExpandPicker === 'function') stopSubtableExpandPicker();
+    } catch (e3) {}
+    try {
+	if (typeof stopSubtableFieldPicker === 'function') stopSubtableFieldPicker();
+    } catch (e4) {}
+    try {
+	if (typeof removeExistingPanels === 'function') removeExistingPanels();
+    } catch (e5) {}
+    try {
+	if (!chrome.storage || !chrome.storage.local) return;
+    } catch (e6) {
+	return;
+    }
+    chrome.storage.local.get(
+	['extensionEnabled', 'inlineTableControlPanels'].concat(ENDUX_SUBTABLE_STORAGE_KEYS),
+	function(result) {
+	    if (chrome.runtime.lastError) return;
+	    enduxSyncSubtableExportCacheFromSlice(result || {});
+	    updateAllClipboardInfo();
+	    if (result.extensionEnabled !== false && result.inlineTableControlPanels !== false) {
+		injectTablePanels(false);
+	    }
+	}
+    );
+}
+
+let _enduxSubtableExportEnabled = false;
+let _enduxSubtableExportFields = [];
+let _enduxSubtableRowFieldCache = {};
+/** Podczas przejścia podtabeli: { completed, total } — dopisywane do statusu panelu. */
+let _enduxSubtableWalkProgress = null;
+
+function enduxResetSubtableRowFieldCache() {
+    _enduxSubtableRowFieldCache = {};
+}
+
+function enduxSubtableWalkProgressSuffix() {
+    if (!_enduxSubtableWalkProgress) return '';
+    var t = _enduxSubtableWalkProgress.total | 0;
+    if (t <= 0) return '';
+    var c = Math.max(0, Math.min(_enduxSubtableWalkProgress.completed | 0, t));
+    var rem = Math.max(0, t - c);
+    return ' · Podstrony: ' + c + '/' + t + ' (zostało ' + rem + ')';
+}
+
+function enduxSubtableRowCacheKey(rowEl) {
+    if (!rowEl || rowEl.nodeType !== 1) return '';
+    try {
+	return rowDirectCellTexts(rowEl)
+	    .map(function(t) {
+		return String(t == null ? '' : t).trim();
+	    })
+	    .join('\u241f')
+	    .slice(0, 1600);
+    } catch (e) {
+	return '';
+    }
+}
+
+/** Odczyt wartości w momencie otwartej podstrony (bez heurystyki podglądu wierszowego). */
+function enduxSubtableFieldTextCaptureDuringWalk(rowEl, field) {
+    if (!field) return '';
+    var el = null;
+    try {
+	el = enduxSubtableFieldElementForRow(rowEl, field);
+    } catch (e) {
+	return '';
+    }
+    if (!el) return '';
+    try {
+	return getPlainText(el);
+    } catch (e2) {
+	return '';
+    }
+}
+
+function enduxRememberSubtableFieldValuesForRow(rowEl, fields) {
+    if (!rowEl || !fields || !fields.length) return;
+    var key = enduxSubtableRowCacheKey(rowEl);
+    if (!key) return;
+    var bucket = _enduxSubtableRowFieldCache[key] || {};
+    for (var i = 0; i < fields.length; i++) {
+	var f = fields[i];
+	if (!f || !f.id) continue;
+	var v = '';
+	try {
+	    v = enduxSubtableFieldTextCaptureDuringWalk(rowEl, f);
+	} catch (e) {
+	    v = '';
+	}
+	bucket[f.id] = String(v == null ? '' : v);
+    }
+    _enduxSubtableRowFieldCache[key] = bucket;
+}
+
+function enduxSubtableCachedFieldTextForRow(rowEl, field) {
+    if (!rowEl || !field || !field.id) return '';
+    var key = enduxSubtableRowCacheKey(rowEl);
+    if (!key) return '';
+    var bucket = _enduxSubtableRowFieldCache[key];
+    if (!bucket) return '';
+    var v = bucket[field.id];
+    return v == null ? '' : String(v);
+}
+
+function enduxSyncSubtableExportCacheFromSlice(su) {
+    if (!su || typeof su !== 'object') {
+	_enduxSubtableExportEnabled = false;
+	_enduxSubtableExportFields = [];
+	enduxResetSubtableRowFieldCache();
+	return;
+    }
+    _enduxSubtableExportEnabled = su.gridSubtableEnabled === true;
+    _enduxSubtableDebugConfirm = su.gridSubtableDebugConfirm === true;
+    _enduxSubtableExportFields = _enduxSubtableExportEnabled
+	? enduxNormalizeSubtableFields(su.gridSubtableFields || [])
+	: [];
+    if (!_enduxSubtableExportEnabled) enduxResetSubtableRowFieldCache();
+}
+
+function enduxSubtableExportExtraColCount() {
+    return _enduxSubtableExportEnabled ? _enduxSubtableExportFields.length : 0;
+}
+
+function enduxEscapeTsvCell(s) {
+    if (s == null) return '';
+    return String(s).replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\t/g, ' ').replace(/\n/g, ' ');
+}
+
+/** Wiersz szablonu, w którym leży kliknięty element (dla ścieżki per-wiersz przy zapisie document). */
+function enduxSubtableFindDataRowContainingLeaf(leaf, rows) {
+    if (!leaf || !rows || !rows.length) return null;
+    for (var i = 0; i < rows.length; i++) {
+	if (enduxIsNodeUnderAncestor(rows[i], leaf)) return rows[i];
+    }
+    return null;
+}
+
+/**
+ * Wiersz danych siatki dla „Wskaż pole”: portal / MUI często wyrywa DOM z wiersza — composedPath
+ * i elementsFromPoint potrafią wciąż wskazać wiersz; na końcu szablon z Ekstrakcji (_gridSelectedEl).
+ */
+function enduxSubtableFindGridRowForSubtablePick(leaf, rows, e) {
+    if (!rows || !rows.length) return null;
+    var i, j, n, path, stack, si;
+    if (e && typeof e.composedPath === 'function') {
+	path = e.composedPath();
+	for (i = 0; i < path.length; i++) {
+	    n = path[i];
+	    if (!n || n.nodeType !== 1) continue;
+	    for (j = 0; j < rows.length; j++) {
+		if (rows[j] === n) return rows[j];
+	    }
+	}
+    }
+    var rDom = enduxSubtableFindDataRowContainingLeaf(leaf, rows);
+    if (rDom) return rDom;
+    if (
+	e &&
+	typeof e.clientX === 'number' &&
+	typeof e.clientY === 'number' &&
+	typeof document.elementsFromPoint === 'function'
+    ) {
+	stack = document.elementsFromPoint(e.clientX, e.clientY);
+	if (stack && stack.length) {
+	    for (si = 0; si < Math.min(stack.length, 80); si++) {
+		n = stack[si];
+		if (!n || n.nodeType !== 1) continue;
+		for (j = 0; j < rows.length; j++) {
+		    if (rows[j] === n) return rows[j];
+		}
+	    }
+	}
+    }
+    if (leaf && leaf.nodeType === 1 && _gridSelectedEl) {
+	for (j = 0; j < rows.length; j++) {
+	    if (rows[j] === _gridSelectedEl) {
+		if (enduxBuildRelativeSelectorFromAncestor(_gridSelectedEl, leaf)) return _gridSelectedEl;
+		break;
+	    }
+	}
+    }
+    return null;
+}
+
+/** Węzeł docelowy pola podtabeli w kontekście wiersza danych (do podświetlenia / tekstu). */
+function enduxSubtableFieldElementForRow(rowEl, field) {
+    if (!field) return null;
+    var rr = field.rowRelativeSelector && String(field.rowRelativeSelector).trim();
+    if (rr && rowEl && rowEl.nodeType === 1) {
+	try {
+	    var elR = rowEl.querySelector(rr);
+	    if (elR) return elR;
+	} catch (e) {
+	    return null;
+	}
+    }
+    if (typeof field.relativeSelector !== 'string' || !field.relativeSelector.trim()) return null;
+    var rel = field.relativeSelector.trim();
+    try {
+	if (field.scope === 'document') {
+	    return document.querySelector(enduxSubtableFieldDocumentCss(rel));
+	}
+	if (rowEl && rowEl.nodeType === 1) {
+	    return rowEl.querySelector(rel);
+	}
+    } catch (e) {
+	return null;
+    }
+    return null;
+}
+
+/** Wartość pola podtabeli dla wiersza eksportu (wiersz = element wiersza danych siatki). */
+function enduxSubtableFieldTextForRow(rowEl, field) {
+    if (!field) return '';
+    /* Po przejściu: cache per wiersz. „Live” z pola document często to jeden węzeł — bez tego wszystkie wiersze dostałyby tę samą wartość przy otwartym panelu. */
+    var cached = enduxSubtableCachedFieldTextForRow(rowEl, field);
+    if (cached != null && String(cached).trim() !== '') return String(cached).trim();
+
+    var el = null;
+    try {
+	el = enduxSubtableFieldElementForRow(rowEl, field);
+    } catch (e) {
+	return '';
+    }
+    if (!el) return '';
+
+    if (rowEl && rowEl.nodeType === 1 && enduxIsNodeUnderAncestor(rowEl, el)) {
+	return getPlainText(el);
+    }
+    var ctx = null;
+    try {
+	ctx = enduxResolveSubtablePreviewContextRow();
+    } catch (e2) {
+	ctx = null;
+    }
+    if (field.scope === 'document' && ctx && rowEl === ctx) {
+	return getPlainText(el);
+    }
+    return '';
+}
+
+function enduxSleep(ms) {
+    return new Promise(function(resolve) {
+	setTimeout(resolve, ms);
+    });
+}
+
+/** Czy el leży pod ancestor (światło + shadow root / slot — dla siatek MUI itd.). */
+function enduxIsNodeUnderAncestor(ancestor, el) {
+    if (!ancestor || !el || el.nodeType !== 1) return false;
+    if (ancestor.contains(el)) return true;
+    var n = el;
+    for (var d = 0; n && d < 80; d++) {
+	if (n === ancestor) return true;
+	if (n.assignedSlot) {
+	    n = n.assignedSlot;
+	    continue;
+	}
+	if (n.parentElement) {
+	    n = n.parentElement;
+	    continue;
+	}
+	var root = n.getRootNode && n.getRootNode();
+	if (root && root instanceof ShadowRoot && root.host) {
+	    n = root.host;
+	    continue;
+	}
+	break;
+    }
+    return false;
+}
+
+function enduxCssEscapeIdent(s) {
+    if (s == null || s === '') return '';
+    try {
+	if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(String(s));
+    } catch (e) {}
+    return String(s).replace(/[^a-zA-Z0-9_-]/g, function(ch) {
+	return '\\' + ch;
+    });
+}
+
+/** Klasy użyteczne w selektorach (odrzuca JSS/emotion i prefiks endux). */
+function enduxStableCssClassTokens(el) {
+    if (!el || el.nodeType !== 1) return [];
+    var raw = '';
+    try {
+	if (typeof el.className === 'string') {
+	    raw = el.className;
+	} else if (el.className && typeof el.className.baseVal === 'string') {
+	    raw = el.className.baseVal;
+	}
+    } catch (e) {
+	return [];
+    }
+    if (!raw || !String(raw).trim()) return [];
+    var out = String(raw)
+	.trim()
+	.split(/\s+/)
+	.filter(function(c) {
+	    if (!c || c.indexOf('endux') === 0) return false;
+	    if (/^jss\d+$/i.test(c)) return false;
+	    if (/^css-[0-9a-z]{4,}$/i.test(c)) return false;
+	    if (/^makeStyles-/i.test(c)) return false;
+	    if (/^Private/i.test(c)) return false;
+	    if (/^emotion-/i.test(c)) return false;
+	    if (/^[a-z]{2,3}\d{6,}$/i.test(c)) return false;
+	    return true;
+	});
+    out.sort(function(a, b) {
+	var am = a.indexOf('Mui') === 0 ? 1 : 0;
+	var bm = b.indexOf('Mui') === 0 ? 1 : 0;
+	if (bm !== am) return bm - am;
+	return b.length - a.length;
+    });
+    return out;
+}
+
+/**
+ * Jeden segment „rodzic > dziecko”: preferuje tag.klasy gdy wśród elementowych dzieci rodzica
+ * jest dokładnie jedno trafienie — krótsze i często wspólne między wierszami (MUI); inaczej :nth-child.
+ */
+function enduxChildSelectorSegment(par, child) {
+    if (!par || !child || child.parentElement !== par) return '';
+    var children = Array.from(par.children).filter(function(n) {
+	return n.nodeType === 1;
+    });
+    var idx = children.indexOf(child);
+    if (idx < 0) return '';
+    var tag = child.tagName.toLowerCase();
+    if (children.length === 1) return tag;
+    var sameTag = children.filter(function(c) {
+	return c.tagName === child.tagName;
+    });
+    if (sameTag.length === 1) return tag;
+    function matchesAmong(sel) {
+	try {
+	    return children.filter(function(n) {
+		try {
+		    return n.matches(sel);
+		} catch (e) {
+		    return false;
+		}
+	    });
+	} catch (e) {
+	    return [];
+	}
+    }
+    var tokens = enduxStableCssClassTokens(child);
+    var ti,
+	tj,
+	sel,
+	m;
+    for (ti = 0; ti < tokens.length; ti++) {
+	sel = tag + '.' + enduxCssEscapeIdent(tokens[ti]);
+	m = matchesAmong(sel);
+	if (m.length === 1 && m[0] === child) return sel;
+    }
+    for (ti = 0; ti < tokens.length; ti++) {
+	for (tj = ti + 1; tj < tokens.length; tj++) {
+	    sel = tag + '.' + enduxCssEscapeIdent(tokens[ti]) + '.' + enduxCssEscapeIdent(tokens[tj]);
+	    m = matchesAmong(sel);
+	    if (m.length === 1 && m[0] === child) return sel;
+	}
+    }
+    if (tokens.length) {
+	sel = tag + '.' + tokens.map(enduxCssEscapeIdent).join('.');
+	m = matchesAmong(sel);
+	if (m.length === 1 && m[0] === child) return sel;
+    }
+    return tag + ':nth-child(' + (idx + 1) + ')';
+}
+
+/** Łańcuch od ancestor do el (descendant combinator >); segmenty: klasy stabilne lub :nth-child. */
+function enduxBuildRelativeSelectorFromAncestor(ancestor, el) {
+    if (!ancestor || !el || el.nodeType !== 1) return '';
+    if (!enduxIsNodeUnderAncestor(ancestor, el)) return '';
+    var parts = [];
+    var cur = el;
+    while (cur && cur !== ancestor) {
+	var par = cur.parentElement;
+	if (!par) {
+	    var root = cur.getRootNode && cur.getRootNode();
+	    if (root && root instanceof ShadowRoot && root.host) {
+		cur = root.host;
+		if (cur === ancestor) break;
+		continue;
+	    }
+	    return '';
+	}
+	var seg = enduxChildSelectorSegment(par, cur);
+	if (!seg) return '';
+	parts.unshift(seg);
+	cur = par;
+    }
+    return parts.join(' > ');
+}
+
+/**
+ * Skraca selektor względem wiersza danych, jeśli krótszy sufiks daje dokładnie jedno trafienie
+ * w każdym wierszu i w wierszu szablonu wskazuje na ten sam leaf (analogiczny układ podstrony).
+ */
+function enduxTryShortenSubtableRowRelativeSelector(templateRow, leaf, fullRel) {
+    if (!templateRow || !leaf || !fullRel || typeof fullRel !== 'string') return fullRel;
+    if (!templateRow.contains || !templateRow.contains(leaf)) return fullRel;
+    var rows = getGridDataRowsOnly();
+    if (!rows.length || rows.length < 2) return fullRel;
+    var parts = fullRel.split(/\s*>\s*/).filter(function(p) {
+	return p && String(p).trim();
+    });
+    if (!parts.length) return fullRel;
+    var start;
+    for (start = 0; start < parts.length; start++) {
+	var sub = parts.slice(start).join(' > ');
+	if (!sub) continue;
+	try {
+	    var ok = true;
+	    var i;
+	    for (i = 0; i < rows.length; i++) {
+		var list = rows[i].querySelectorAll(sub);
+		if (list.length !== 1) {
+		    ok = false;
+		    break;
+		}
+		var hit = list[0];
+		if (rows[i] === templateRow) {
+		    if (hit !== leaf) {
+			ok = false;
+			break;
+		    }
+		} else if (hit.tagName !== leaf.tagName) {
+		    ok = false;
+		    break;
+		}
+	    }
+	    if (ok) return sub;
+	} catch (e) {}
+    }
+    return fullRel;
+}
+
+/**
+ * Gdy zapis padł na pełnej ścieżce od body (portal), a leaf w drzewie leży pod którymś wierszem siatki:
+ * wycina sufiks po prefiksie „body → wiersz” (najdłuższy pasujący prefiks) i sprawdza, że ten sufiks
+ * daje dokładnie jedno trafienie w każdym wierszu — wtedy ten sam selektor działa dla każdego wiersza.
+ */
+function enduxSubtableTryDeriveRowScopeFromBodyPath(leaf, relFromBody, rows) {
+    if (!leaf || !relFromBody || typeof relFromBody !== 'string' || !rows || !rows.length) return null;
+    var candidates = [];
+    var ri, pfx, sep, suf, i, lst, ok;
+    for (ri = 0; ri < rows.length; ri++) {
+	pfx = enduxBuildRelativeSelectorFromAncestor(document.body, rows[ri]);
+	if (!pfx || relFromBody === pfx) continue;
+	sep = pfx + ' > ';
+	if (relFromBody.indexOf(sep) !== 0) continue;
+	suf = relFromBody.substring(sep.length);
+	if (!suf) continue;
+	candidates.push({ row: rows[ri], pfxLen: pfx.length, suffix: suf });
+    }
+    if (!candidates.length) return null;
+    candidates.sort(function(a, b) {
+	return b.pfxLen - a.pfxLen;
+    });
+    for (ri = 0; ri < candidates.length; ri++) {
+	var c = candidates[ri];
+	suf = c.suffix;
+	ok = true;
+	for (i = 0; i < rows.length; i++) {
+	    try {
+		lst = rows[i].querySelectorAll(suf);
+	    } catch (ex) {
+		ok = false;
+		break;
+	    }
+	    if (lst.length !== 1) {
+		ok = false;
+		break;
+	    }
+	    if (lst[0].tagName !== leaf.tagName) {
+		ok = false;
+		break;
+	    }
+	    if (rows[i] === c.row && lst[0] !== leaf) {
+		ok = false;
+		break;
+	    }
+	}
+	if (ok) return { templateRow: c.row, suffix: suf };
+    }
+    return null;
+}
+
+/**
+ * Ostatnia deska ratunku: sufiks łańcucha zapisany od body, który jako selektor względem każdego wiersza
+ * daje dokładnie jedno trafienie; leaf musi być trafieniem w dokładnie jednym wierszu (jak przy tym samym układzie komórek).
+ */
+function enduxSubtableBruteRowRelativeFromBodyPath(leaf, rel, rows) {
+    if (!leaf || !rel || typeof rel !== 'string' || !rows || !rows.length) return null;
+    var parts = rel.split(/\s*>\s*/).filter(function(p) {
+	return p && String(p).trim();
+    });
+    if (!parts.length) return null;
+    var start, sub, i, lst, ok, hitOwner;
+    /* Od najkrótszego sufiksu (najbliżej leaf), żeby zapisać wspólną krótką ścieżkę wiersza, nie pełny ogon od main. */
+    for (start = parts.length - 1; start >= 0; start--) {
+	sub = parts.slice(start).join(' > ');
+	if (!sub) continue;
+	try {
+	    ok = true;
+	    hitOwner = -1;
+	    for (i = 0; i < rows.length; i++) {
+		lst = rows[i].querySelectorAll(sub);
+		if (lst.length !== 1) {
+		    ok = false;
+		    break;
+		}
+		if (lst[0].tagName !== leaf.tagName) {
+		    ok = false;
+		    break;
+		}
+		if (lst[0] === leaf) {
+		    if (hitOwner >= 0) {
+			ok = false;
+			break;
+		    }
+		    hitOwner = i;
+		}
+	    }
+	    if (ok && hitOwner >= 0) return { templateRow: rows[hitOwner], suffix: sub };
+	} catch (ex) {}
+    }
+    return null;
+}
 
 function _removeSelectorPickerHeaderCancel() {
     var el = document.querySelector('[data-endux-picker-header-cancel="1"]');
@@ -670,7 +1275,7 @@ function enduxFirstMatchOutsidePanel(selector) {
     }
     for (var i = 0; i < list.length; i++) {
 	var c = list[i];
-	if (c.nodeType === 1 && !isInsideEnduxGridPanel(c)) return c;
+	if (c.nodeType === 1 && !isInsideEnduxExtensionUi(c)) return c;
     }
     return null;
 }
@@ -810,9 +1415,8 @@ function _pickerMouseOver(e) {
     if (!_pickerActive) return;
     const t = e.target;
     if (!t || t.nodeType !== 1) return;
-    if (t.closest('#endux-picker-banner')) return;
-    if (t.closest('#' + GRID_PANEL_ID)) return;
     const target = _nearestClickable(t);
+    if (isInsideEnduxExtensionUi(t) || isInsideEnduxExtensionUi(target)) return;
     if (_pickerHighlightEl && _pickerHighlightEl !== target) {
         _pickerHighlightEl.style.outline = _pickerHighlightEl._enduxOrigOutline || '';
         _pickerHighlightEl.style.cursor = _pickerHighlightEl._enduxOrigCursor || '';
@@ -827,8 +1431,7 @@ function _pickerMouseOver(e) {
 function _pickerMouseOut(e) {
     if (!_pickerActive || !_pickerHighlightEl) return;
     const rel = e.relatedTarget;
-    if (rel && rel.nodeType === 1 &&
-	(rel.closest('#endux-picker-banner') || rel.closest('#' + GRID_PANEL_ID))) return;
+    if (rel && rel.nodeType === 1 && isInsideEnduxExtensionUi(rel)) return;
     _pickerHighlightEl.style.outline = _pickerHighlightEl._enduxOrigOutline || '';
     _pickerHighlightEl.style.cursor = _pickerHighlightEl._enduxOrigCursor || '';
     _pickerHighlightEl = null;
@@ -838,15 +1441,21 @@ function _pickerClick(e) {
     if (!_pickerActive) return;
     const t = e.target;
     if (!t || t.nodeType !== 1) return;
-    if (t.closest('#endux-picker-banner')) return;
-    if (t.closest('#' + GRID_PANEL_ID)) return;
+    const elPick = _nearestClickable(t);
+    if (isInsideEnduxExtensionUi(t) || isInsideEnduxExtensionUi(elPick)) {
+	if (isInsideEnduxExtensionUi(elPick) && !isInsideEnduxExtensionUi(t)) {
+	    showToast('Wybierz element na stronie, nie w panelu EnduX', 'warning');
+	}
+	return;
+    }
     e.preventDefault();
     e.stopPropagation();
-    const selector = generateCssSelector(_nearestClickable(t));
+    const selector = generateCssSelector(elPick);
     stopSelectorPicker();
     try {
         chrome.storage.local.set({ [_pickerStorageKey]: selector }, function() {
             showToast('🎯 Selektor zapisany: ' + selector, 'success');
+	    if (_pickerStorageKey === 'gridSubtableBackSelector') enduxRefreshSubtableTabDisplays();
         });
     } catch (err) {}
 }
@@ -858,9 +1467,12 @@ function _pickerKeyDown(e) {
     }
 }
 
-function startSelectorPicker(storageKey) {
+function startSelectorPicker(storageKey, customBannerText) {
     if (_pickerActive) stopSelectorPicker();
+    stopSubtableExpandPicker();
+    stopSubtableFieldPicker();
     _pickerStorageKey = storageKey || 'crawlerClass';
+    _pickerBannerCustomText = typeof customBannerText === 'string' ? customBannerText : '';
     _pickerActive = true;
     document.body.style.cursor = 'crosshair';
 
@@ -888,7 +1500,7 @@ function startSelectorPicker(storageKey) {
 	boxSizing: 'border-box'
     });
     var msg = document.createElement('span');
-    msg.textContent =
+    msg.textContent = _pickerBannerCustomText ||
 	'🎯 Kliknij element „Dalej” na stronie — dolny panel nie blokuje strony; nagłówek panelu: Anuluj lub Esc.';
     msg.style.lineHeight = '1.35';
     var escHint = document.createElement('span');
@@ -930,6 +1542,7 @@ function startSelectorPicker(storageKey) {
 
 function stopSelectorPicker() {
     _pickerActive = false;
+    _pickerBannerCustomText = '';
     document.body.style.cursor = '';
     _applySelectorPickerPanelPassThrough(false);
     if (_pickerHighlightEl) {
@@ -1128,12 +1741,40 @@ function refreshGridPanelSelectionIfStale() {
     });
 }
 
+/** Nie niszcz podglądu (innerHTML) gdy użytkownik edytuje nazwę pola, kopiuje ścieżkę albo zaznacza tekst — MutationObserver często woła updateGridPreviewUI. */
+function enduxGridPreviewEditShouldDeferDomRefresh() {
+    var root = _gridPanelRoot;
+    if (!root) return false;
+    if ((root.getAttribute('data-endux-grid-active-tab') || 'extract') !== 'subtable') return false;
+    var preview = root.querySelector('[data-grid-preview]');
+    if (!preview) return false;
+    if (_gridSubtablePreviewPointerDown) return true;
+    var ae = document.activeElement;
+    if (ae && ae.nodeType === 1 && preview.contains(ae)) {
+	if (ae.tagName === 'INPUT' && ae.getAttribute('data-subtable-field-id')) return true;
+	if (ae.tagName === 'TEXTAREA' && ae.getAttribute('data-subtable-path-readonly') === '1') return true;
+    }
+    var sel = typeof window.getSelection === 'function' ? window.getSelection() : null;
+    if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
+	var r = sel.getRangeAt(0);
+	var n = r.commonAncestorContainer;
+	if (n.nodeType === 3) n = n.parentElement;
+	if (n && preview.contains(n)) return true;
+    }
+    return false;
+}
+
+function enduxGridSubtablePreviewGlobalMouseUp() {
+    _gridSubtablePreviewPointerDown = false;
+}
+
 function scheduleGridPanelPreviewAfterDomChange() {
     if (!document.getElementById(GRID_PANEL_ID)) return;
     if (_gridPreviewAfterDomTimer) clearTimeout(_gridPreviewAfterDomTimer);
     _gridPreviewAfterDomTimer = setTimeout(function() {
 	_gridPreviewAfterDomTimer = null;
 	if (!_gridPanelRoot) return;
+	if (enduxGridPreviewEditShouldDeferDomRefresh()) return;
 	refreshGridPanelSelectionIfStale();
 	updateGridPreviewUI();
     }, 100);
@@ -1359,6 +2000,13 @@ let _gridCachedDataSelector = null;
 let _gridCachedHeaderSelector = null;
 let _gridPreviewAfterDomTimer = null;
 let _enduxCrawlerStorageListenerBound = false;
+/** Wiersz danych siatki używany do podglądu wartości pól podtabeli (klik na stronie w zakładce Podtabela). */
+let _gridSubtablePreviewRowEl = null;
+let _gridSubtablePreviewRowListenerBound = false;
+let _gridSubtablePreviewPointerDown = false;
+let _gridSubtablePreviewGlobalMouseUpBound = false;
+let _enduxSubtableFieldHighlightEl = null;
+let _enduxSubtableFieldHighlightStyle = null;
 
 function ensureEnduxCrawlerInputsSyncFromStorage() {
     if (_enduxCrawlerStorageListenerBound || !chrome.storage || !chrome.storage.onChanged) return;
@@ -1378,6 +2026,35 @@ function ensureEnduxCrawlerInputsSyncFromStorage() {
 		enduxSyncToggleForInput(ac);
 	    }
 	}
+	var subKeys = {
+	    gridSubtableEnabled: 1,
+	    gridSubtableExpandRelative: 1,
+	    gridSubtableBackSelector: 1,
+	    gridSubtableUseHistoryBack: 1,
+	    gridSubtableDebugConfirm: 1,
+	    gridSubtableFields: 1
+	};
+	for (var k in changes) {
+	    if (subKeys[k]) {
+		enduxRefreshSubtableTabDisplays();
+		var hcb = root.querySelector('[data-grid-subtable-use-history]');
+		if (hcb && changes.gridSubtableUseHistoryBack) {
+		    hcb.checked = changes.gridSubtableUseHistoryBack.newValue === true;
+		    enduxSyncToggleForInput(hcb);
+		}
+		var en = root.querySelector('[data-grid-subtable-enabled]');
+		if (en && changes.gridSubtableEnabled) {
+		    en.checked = changes.gridSubtableEnabled.newValue === true;
+		    enduxSyncToggleForInput(en);
+		}
+		var dbg = root.querySelector('[data-grid-subtable-debug]');
+		if (dbg && changes.gridSubtableDebugConfirm) {
+		    dbg.checked = changes.gridSubtableDebugConfirm.newValue === true;
+		    enduxSyncToggleForInput(dbg);
+		}
+		break;
+	    }
+	}
     });
 }
 
@@ -1386,35 +2063,53 @@ function switchGridPanelTab(tabId) {
     if (!root) return;
     var extractPane = root.querySelector('[data-endux-grid-tab-pane="extract"]');
     var crawlPane = root.querySelector('[data-endux-grid-tab-pane="crawler"]');
+    var subtablePane = root.querySelector('[data-endux-grid-tab-pane="subtable"]');
     var btnE = root.querySelector('[data-endux-grid-tab="extract"]');
     var btnC = root.querySelector('[data-endux-grid-tab="crawler"]');
+    var btnS = root.querySelector('[data-endux-grid-tab="subtable"]');
     if (!extractPane || !crawlPane || !btnE || !btnC) return;
     root.setAttribute('data-endux-grid-active-tab', tabId);
     var activeBg = '#ffffff';
     var idleBg = '#d1d5db';
     var activeColor = '#111827';
     var idleColor = '#4b5563';
-    if (tabId === 'crawler') {
+    function styleTabBtn(btn, active) {
+	if (!btn) return;
+	btn.style.setProperty('background', active ? activeBg : idleBg, 'important');
+	btn.style.setProperty('color', active ? activeColor : idleColor, 'important');
+	btn.style.setProperty('font-weight', active ? '700' : '500', 'important');
+    }
+    function hideAllPanes() {
 	extractPane.style.setProperty('display', 'none', 'important');
+	crawlPane.style.setProperty('display', 'none', 'important');
+	if (subtablePane) subtablePane.style.setProperty('display', 'none', 'important');
+	styleTabBtn(btnE, false);
+	styleTabBtn(btnC, false);
+	styleTabBtn(btnS, false);
+    }
+    hideAllPanes();
+    if (tabId === 'crawler') {
 	crawlPane.style.setProperty('display', 'flex', 'important');
 	crawlPane.style.setProperty('flex-direction', 'column', 'important');
-	btnE.style.setProperty('background', idleBg, 'important');
-	btnE.style.setProperty('color', idleColor, 'important');
-	btnE.style.setProperty('font-weight', '500', 'important');
-	btnC.style.setProperty('background', activeBg, 'important');
-	btnC.style.setProperty('color', activeColor, 'important');
-	btnC.style.setProperty('font-weight', '700', 'important');
+	styleTabBtn(btnC, true);
+    } else if (tabId === 'subtable' && subtablePane) {
+	subtablePane.style.setProperty('display', 'flex', 'important');
+	subtablePane.style.setProperty('flex-direction', 'column', 'important');
+	styleTabBtn(btnS, true);
+	enduxRefreshSubtableTabDisplays();
+	enduxBindSubtablePreviewRowListener();
     } else {
-	crawlPane.style.setProperty('display', 'none', 'important');
 	extractPane.style.setProperty('display', 'flex', 'important');
 	extractPane.style.setProperty('flex-direction', 'column', 'important');
-	btnE.style.setProperty('background', activeBg, 'important');
-	btnE.style.setProperty('color', activeColor, 'important');
-	btnE.style.setProperty('font-weight', '700', 'important');
-	btnC.style.setProperty('background', idleBg, 'important');
-	btnC.style.setProperty('color', idleColor, 'important');
-	btnC.style.setProperty('font-weight', '500', 'important');
+	styleTabBtn(btnE, true);
+	enduxUnbindSubtablePreviewRowListener();
+	enduxClearSubtableFieldHoverHighlight();
     }
+    if (tabId === 'crawler') {
+	enduxUnbindSubtablePreviewRowListener();
+	enduxClearSubtableFieldHoverHighlight();
+    }
+    updateGridPreviewUI();
 }
 
 const GRID_PANEL_EXPANDED_ROOT_STYLE = {
@@ -1489,6 +2184,14 @@ function restoreGridPanelExpandedLayoutInDom() {
 	extractPane.style.setProperty('gap', '10px', 'important');
 	extractPane.style.setProperty('overflow', 'auto', 'important');
     }
+    var subtablePaneRestore = root.querySelector('[data-endux-grid-tab-pane="subtable"]');
+    if (subtablePaneRestore) {
+	subtablePaneRestore.style.setProperty('flex', '1', 'important');
+	subtablePaneRestore.style.setProperty('min-height', '0', 'important');
+	subtablePaneRestore.style.setProperty('min-width', '0', 'important');
+	subtablePaneRestore.style.setProperty('gap', '10px', 'important');
+	subtablePaneRestore.style.setProperty('overflow', 'auto', 'important');
+    }
     if (left) {
 	left.style.setProperty('display', 'flex', 'important');
 	left.style.setProperty('flex-direction', 'column', 'important');
@@ -1559,8 +2262,10 @@ function setGridPanelMinimized(minimized) {
     const body = _gridPanelRoot.querySelector('[data-endux-grid-section="body"]');
     const chip = _gridPanelRoot.querySelector('[data-endux-grid-minimize-chip="1"]');
     if (!header || !body || !chip) return;
-    if (minimized) {
+	if (minimized) {
 	stopGridPicker();
+	stopSubtableExpandPicker();
+	stopSubtableFieldPicker();
 	Object.assign(_gridPanelRoot.style, {
 	    position: 'fixed',
 	    left: '12px',
@@ -1603,6 +2308,18 @@ function setGridPanelMinimized(minimized) {
 function isInsideEnduxGridPanel(el) {
     if (!el || !el.closest) return false;
     return !!el.closest('#' + GRID_PANEL_ID);
+}
+
+/** UI wstrzyknięte przez rozszerzenie — nie wolno zapisywać takich elementów jako selektorów docelowych. */
+function isInsideEnduxExtensionUi(el) {
+    if (!el || !el.closest) return false;
+    if (el.closest('#' + GRID_PANEL_ID)) return true;
+    if (el.closest('[data-endux-panel="table"]')) return true;
+    if (el.closest('#endux-picker-banner')) return true;
+    if (el.closest('#' + ENDUX_SUBTABLE_EXPAND_BANNER_ID)) return true;
+    if (el.closest('#' + ENDUX_SUBTABLE_FIELD_BANNER_ID)) return true;
+    if (el.closest('#endux-toast')) return true;
+    return false;
 }
 
 function countElementChildren(el) {
@@ -1667,7 +2384,7 @@ function padCellsToColumnCount(cells, colCount) {
     return out;
 }
 
-function computeGridExportColumnCount() {
+function computeGridExportBaseColumnCount() {
     let n = 0;
     if (_gridHeaderRowEl) {
 	n = Math.max(n, rowDirectCellTexts(_gridHeaderRowEl).length);
@@ -1681,10 +2398,123 @@ function computeGridExportColumnCount() {
     return n;
 }
 
-function buildTsvFromRows(rows, colCount) {
-    return rows.map(function(row) {
-	return padCellsToColumnCount(rowDirectCellTexts(row), colCount).join('\t');
-    }).join('\n');
+/** Liczba kolumn eksportu: siatka + dodatkowe kolumny pól podtabeli (gdy włączona podtabela). */
+function computeGridExportColumnCount() {
+    return computeGridExportBaseColumnCount() + enduxSubtableExportExtraColCount();
+}
+
+function buildTsvFromRows(rows, baseColCount) {
+    var extra = enduxSubtableExportExtraColCount();
+    return rows
+	.map(function(row) {
+	    var cells = padCellsToColumnCount(rowDirectCellTexts(row), baseColCount);
+	    for (var i = 0; i < extra; i++) {
+		cells.push(enduxEscapeTsvCell(enduxSubtableFieldTextForRow(row, _enduxSubtableExportFields[i])));
+	    }
+	    return cells.join('\t');
+	})
+	.join('\n');
+}
+
+/**
+ * Jedna linia etykiet kolumn siatki: zapisany nagłówek + w pustych miejscach tekst z pierwszego wiersza danych
+ * (np. pierwszy wiersz to „Athlete”, drugi wiersz DOM to # / Swim — oba w jednej linii eksportu).
+ */
+function enduxMergeExportedHeaderBaseCells(baseColCount) {
+    var headerTexts =
+	_gridHeaderRowEl && _gridHeaderRowEl.isConnected ? rowDirectCellTexts(_gridHeaderRowEl) : [];
+    var dataRows = getGridDataRowsOnly();
+    var firstTexts =
+	dataRows.length && dataRows[0].isConnected ? rowDirectCellTexts(dataRows[0]) : [];
+    var out = [];
+    for (var i = 0; i < baseColCount; i++) {
+	var h = i < headerTexts.length ? String(headerTexts[i] || '').trim() : '';
+	var d = i < firstTexts.length ? String(firstTexts[i] || '').trim() : '';
+	out.push(h || d);
+    }
+    return out;
+}
+
+/** Pierwszy wiersz danych jest duplikatem scalonego nagłówka (ten sam wiersz co nagłówki kolumn w DOM). */
+function enduxShouldSkipFirstDataRowIfHeaderDuplicate(rows, baseColCount, mergedBaseCells) {
+    if (!_gridHeaderRowEl || !rows.length) return false;
+    var m = padCellsToColumnCount(mergedBaseCells, baseColCount);
+    var r0 = padCellsToColumnCount(rowDirectCellTexts(rows[0]), baseColCount);
+    for (var i = 0; i < baseColCount; i++) {
+	if (String(r0[i] || '').trim() !== String(m[i] || '').trim()) return false;
+    }
+    return true;
+}
+
+/** Ile kolumn nagłówka było pustych i wzięło tekst z pierwszego wiersza danych (dwa wiersze nagłówka w DOM). */
+function enduxMergeAbsorbedFirstDataRowCount(baseColCount) {
+    if (!_gridHeaderRowEl || !getGridDataRowsOnly().length) return 0;
+    var headerTexts = rowDirectCellTexts(_gridHeaderRowEl);
+    var firstTexts = rowDirectCellTexts(getGridDataRowsOnly()[0]);
+    var n = 0;
+    for (var i = 0; i < baseColCount; i++) {
+	var h = i < headerTexts.length ? String(headerTexts[i] || '').trim() : '';
+	var d = i < firstTexts.length ? String(firstTexts[i] || '').trim() : '';
+	if (!h && d) n++;
+    }
+    return n;
+}
+
+/** Czy zapisany wiersz nagłówka w DOM ma mało tekstu w stosunku do liczby kolumn (pierwszy wiersz to grupa, nie pełne etykiety). */
+function enduxSavedHeaderRowIsSparse(baseColCount) {
+    if (!_gridHeaderRowEl) return false;
+    var h = rowDirectCellTexts(_gridHeaderRowEl);
+    var n = 0;
+    for (var i = 0; i < baseColCount && i < h.length; i++) {
+	if (String(h[i] || '').trim()) n++;
+    }
+    return n < Math.max(2, Math.ceil(baseColCount / 3));
+}
+
+/**
+ * Ukryj pierwszy wiersz danych w podglądzie / TSV: pełny duplikat scalonego nagłówka albo druga część nagłówka
+ * (wiele pustych komórek w zapisanym wierszu wypełnionych z pierwszego wiersza danych).
+ */
+function enduxShouldHideFirstDataRowAfterMergedHeader(rows, baseColCount) {
+    if (!rows.length || !_gridHeaderRowEl) return false;
+    var merged = enduxMergeExportedHeaderBaseCells(baseColCount);
+    if (enduxShouldSkipFirstDataRowIfHeaderDuplicate(rows, baseColCount, merged)) return true;
+    var absorb = enduxMergeAbsorbedFirstDataRowCount(baseColCount);
+    if (absorb >= 2) return true;
+    if (absorb >= 1 && enduxSavedHeaderRowIsSparse(baseColCount)) return true;
+    return false;
+}
+
+/** Wiersze do treści TSV / podglądu — bez pierwszego, jeśli to druga część nagłówka (MUI itd.). */
+function enduxGridDataRowsForBodyExport(baseColCount) {
+    var rows = getGridDataRowsOnly();
+    if (!rows.length || !_gridHeaderRowEl) return rows;
+    if (enduxShouldHideFirstDataRowAfterMergedHeader(rows, baseColCount)) {
+	return rows.slice(1);
+    }
+    return rows;
+}
+
+/** Nagłówek TSV: scalone komórki siatki + nazwy pól podtabeli. */
+function enduxBuildGridExportHeaderLineWithSubtable(baseColCount) {
+    var cells = padCellsToColumnCount(enduxMergeExportedHeaderBaseCells(baseColCount), baseColCount);
+    if (_enduxSubtableExportEnabled) {
+	_enduxSubtableExportFields.forEach(function(f) {
+	    cells.push(enduxEscapeTsvCell(f.name));
+	});
+    }
+    return cells.join('\t');
+}
+
+/** Pierwszy wiersz tylko z nazwami pól podtabeli (puste komórki pod siatkę). */
+function enduxBuildSyntheticSubtableHeaderLine(baseColCount) {
+    var cells = padCellsToColumnCount([], baseColCount);
+    if (_enduxSubtableExportEnabled) {
+	_enduxSubtableExportFields.forEach(function(f) {
+	    cells.push(enduxEscapeTsvCell(f.name));
+	});
+    }
+    return cells.join('\t');
 }
 
 function clearGridHeaderVisual() {
@@ -1700,6 +2530,7 @@ function clearGridHeaderVisual() {
 }
 
 function clearGridSelectionOutline() {
+    _gridSubtablePreviewRowEl = null;
     if (!_gridSelectedEl) return;
     const el = _gridSelectedEl;
     if (el !== _gridHeaderRowEl && el._enduxGridOrigOutline !== undefined) {
@@ -2023,7 +2854,9 @@ function _gridPickerMouseOver(e) {
     if (!_gridPickerActive) return;
     const t = e.target;
     if (!t || t.nodeType !== 1) return;
-    if (isInsideEnduxGridPanel(t)) return;
+    if (isInsideEnduxExtensionUi(t)) return;
+    const nearG = _nearestClickable(t);
+    if (isInsideEnduxExtensionUi(nearG)) return;
     if (_gridPickerHoverEl && _gridPickerHoverEl !== t) {
 	_gridPickerHoverEl.style.outline = _gridPickerHoverEl._enduxGridHoverOrigOutline || '';
 	_gridPickerHoverEl.style.cursor = _gridPickerHoverEl._enduxGridHoverOrigCursor || '';
@@ -2038,7 +2871,7 @@ function _gridPickerMouseOver(e) {
 function _gridPickerMouseOut(e) {
     if (!_gridPickerActive || !_gridPickerHoverEl) return;
     const rel = e.relatedTarget;
-    if (rel && rel.nodeType === 1 && isInsideEnduxGridPanel(rel)) return;
+    if (rel && rel.nodeType === 1 && isInsideEnduxExtensionUi(rel)) return;
     _gridPickerHoverEl.style.outline = _gridPickerHoverEl._enduxGridHoverOrigOutline || '';
     _gridPickerHoverEl.style.cursor = _gridPickerHoverEl._enduxGridHoverOrigCursor || '';
     _gridPickerHoverEl = null;
@@ -2048,7 +2881,12 @@ function _gridPickerClick(e) {
     if (!_gridPickerActive) return;
     const t = e.target;
     if (!t || t.nodeType !== 1) return;
-    if (isInsideEnduxGridPanel(t)) return;
+    if (isInsideEnduxExtensionUi(t)) return;
+    const nearG = _nearestClickable(t);
+    if (isInsideEnduxExtensionUi(nearG)) {
+	showToast('Wybierz element na stronie, nie w panelu EnduX', 'warning');
+	return;
+    }
     e.preventDefault();
     e.stopPropagation();
     stopGridPicker();
@@ -2069,12 +2907,1259 @@ function _gridPickerKeyDown(e) {
 
 function startGridPicker() {
     if (_gridPickerActive) stopGridPicker();
+    stopSubtableExpandPicker();
+    stopSubtableFieldPicker();
     _gridPickerActive = true;
     document.body.style.cursor = 'crosshair';
     document.addEventListener('mouseover', _gridPickerMouseOver, true);
     document.addEventListener('mouseout', _gridPickerMouseOut, true);
     document.addEventListener('click', _gridPickerClick, true);
     document.addEventListener('keydown', _gridPickerKeyDown, true);
+}
+
+function stopSubtableExpandPicker() {
+    if (!_subtableExpandPickerActive) return;
+    _subtableExpandPickerActive = false;
+    document.body.style.cursor = '';
+    _applySelectorPickerPanelPassThrough(false);
+    if (_subtableExpandPickerBanner) {
+	_subtableExpandPickerBanner.remove();
+	_subtableExpandPickerBanner = null;
+    }
+    if (_subtableExpandPickerHoverEl) {
+	_subtableExpandPickerHoverEl.style.outline = _subtableExpandPickerHoverEl._enduxSubHoverOrigOutline || '';
+	_subtableExpandPickerHoverEl.style.cursor = _subtableExpandPickerHoverEl._enduxSubHoverOrigCursor || '';
+	_subtableExpandPickerHoverEl = null;
+    }
+    document.removeEventListener('mouseover', _subtableExpandPickerMouseOver, true);
+    document.removeEventListener('mouseout', _subtableExpandPickerMouseOut, true);
+    document.removeEventListener('click', _subtableExpandPickerClick, true);
+    document.removeEventListener('keydown', _subtableExpandPickerKeyDown, true);
+}
+
+function _subtableExpandPickerMouseOver(e) {
+    if (!_subtableExpandPickerActive) return;
+    const t = e.target;
+    if (!t || t.nodeType !== 1) return;
+    if (isInsideEnduxExtensionUi(t)) return;
+    const nearS = _nearestClickable(t);
+    if (isInsideEnduxExtensionUi(nearS)) return;
+    if (_subtableExpandPickerHoverEl && _subtableExpandPickerHoverEl !== nearS) {
+	_subtableExpandPickerHoverEl.style.outline = _subtableExpandPickerHoverEl._enduxSubHoverOrigOutline || '';
+	_subtableExpandPickerHoverEl.style.cursor = _subtableExpandPickerHoverEl._enduxSubHoverOrigCursor || '';
+    }
+    _subtableExpandPickerHoverEl = nearS;
+    _subtableExpandPickerHoverEl._enduxSubHoverOrigOutline = _subtableExpandPickerHoverEl.style.outline;
+    _subtableExpandPickerHoverEl._enduxSubHoverOrigCursor = _subtableExpandPickerHoverEl.style.cursor;
+    _subtableExpandPickerHoverEl.style.outline = '2px dashed #0d9488';
+    _subtableExpandPickerHoverEl.style.cursor = 'crosshair';
+}
+
+function _subtableExpandPickerMouseOut(e) {
+    if (!_subtableExpandPickerActive || !_subtableExpandPickerHoverEl) return;
+    const rel = e.relatedTarget;
+    if (rel && rel.nodeType === 1 && isInsideEnduxExtensionUi(rel)) return;
+    _subtableExpandPickerHoverEl.style.outline = _subtableExpandPickerHoverEl._enduxSubHoverOrigOutline || '';
+    _subtableExpandPickerHoverEl.style.cursor = _subtableExpandPickerHoverEl._enduxSubHoverOrigCursor || '';
+    _subtableExpandPickerHoverEl = null;
+}
+
+function _subtableExpandPickerClick(e) {
+    if (!_subtableExpandPickerActive) return;
+    var leaf = enduxSubtablePickLeafFromPointerEvent(e);
+    if (!leaf || leaf.nodeType !== 1) return;
+    if (isInsideEnduxExtensionUi(leaf)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rows = getGridDataRowsOnly();
+    if (!rows.length) {
+	showToast('Brak wierszy danych — w zakładce „Ekstrakcja wyników” wskaż najpierw wiersz szablonu', 'warning');
+	return;
+    }
+    var hostRow = enduxSubtableFindHostRowForPick(e, rows);
+    if (!hostRow) {
+	showToast('Kliknij element wewnątrz wiersza danych siatki (krzyżyk nadal aktywny — spróbuj ponownie)', 'warning');
+	return;
+    }
+    const rel = enduxBuildRelativeSelectorFromAncestor(hostRow, leaf);
+    if (!rel) {
+	showToast('Nie udało się zbudować ścieżki względnej od wiersza', 'error');
+	return;
+    }
+    stopSubtableExpandPicker();
+    chrome.storage.local.set({ gridSubtableExpandRelative: rel }, function() {
+	if (chrome.runtime.lastError) return;
+	showToast('Podtabela: rozwinięcie zapisane (względem wiersza)', 'success');
+	enduxRefreshSubtableTabDisplays();
+    });
+}
+
+function _subtableExpandPickerKeyDown(e) {
+    if (e.key === 'Escape') {
+	stopSubtableExpandPicker();
+	showToast('Wybieranie anulowane', 'warning');
+    }
+}
+
+function startSubtableExpandPicker() {
+    if (_subtableExpandPickerActive) stopSubtableExpandPicker();
+    stopSubtableFieldPicker();
+    if (_gridPickerActive) stopGridPicker();
+    if (_pickerActive) stopSelectorPicker();
+    document.body.style.cursor = 'crosshair';
+
+    _subtableExpandPickerBanner = document.createElement('div');
+    _subtableExpandPickerBanner.id = ENDUX_SUBTABLE_EXPAND_BANNER_ID;
+    Object.assign(_subtableExpandPickerBanner.style, {
+	position: 'fixed',
+	top: '0',
+	left: '0',
+	right: '0',
+	zIndex: '2147483647',
+	background: '#007bff',
+	color: '#fff',
+	padding: '8px 16px',
+	fontSize: '14px',
+	fontWeight: '600',
+	fontFamily: 'sans-serif',
+	boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+	pointerEvents: 'auto',
+	display: 'flex',
+	alignItems: 'center',
+	justifyContent: 'center',
+	flexWrap: 'wrap',
+	gap: '10px 14px',
+	boxSizing: 'border-box'
+    });
+    var msg = document.createElement('span');
+    msg.textContent =
+	'🎯 Klik rozwijający: wskaż element w obrębie wiersza danych siatki (najpierw szablon wiersza w „Ekstrakcja wyników”). Kursor krzyżyk — dolny panel nie blokuje strony; nagłówek panelu: Anuluj lub Esc.';
+    msg.style.lineHeight = '1.35';
+    var escHint = document.createElement('span');
+    escHint.textContent = 'Esc — anuluj';
+    escHint.style.opacity = '0.92';
+    escHint.style.fontSize = '13px';
+    escHint.style.fontWeight = '500';
+    var cancelTop = document.createElement('button');
+    cancelTop.type = 'button';
+    cancelTop.textContent = 'Anuluj wybór';
+    Object.assign(cancelTop.style, {
+	padding: '6px 14px',
+	borderRadius: '6px',
+	border: 'none',
+	background: '#fff',
+	color: '#007bff',
+	fontWeight: '700',
+	cursor: 'pointer',
+	fontSize: '13px',
+	fontFamily: 'inherit'
+    });
+    cancelTop.addEventListener('click', function(ev) {
+	ev.stopPropagation();
+	stopSubtableExpandPicker();
+	showToast('Wybieranie anulowane', 'warning');
+    });
+    _subtableExpandPickerBanner.appendChild(msg);
+    _subtableExpandPickerBanner.appendChild(escHint);
+    _subtableExpandPickerBanner.appendChild(cancelTop);
+    document.body.appendChild(_subtableExpandPickerBanner);
+
+    _applySelectorPickerPanelPassThrough(true);
+
+    _subtableExpandPickerActive = true;
+    document.addEventListener('mouseover', _subtableExpandPickerMouseOver, true);
+    document.addEventListener('mouseout', _subtableExpandPickerMouseOut, true);
+    document.addEventListener('click', _subtableExpandPickerClick, true);
+    document.addEventListener('keydown', _subtableExpandPickerKeyDown, true);
+}
+
+function enduxNormalizeSubtableFields(raw) {
+    if (raw && typeof raw === 'object' && !Array.isArray(raw) && raw.relativeSelector) {
+	return enduxNormalizeSubtableFields([raw]);
+    }
+    if (!Array.isArray(raw)) return [];
+    return raw
+	.filter(function(f) {
+	    return f && typeof f.relativeSelector === 'string' && f.relativeSelector.trim();
+	})
+	.map(function(f, idx) {
+	    return {
+		id: typeof f.id === 'string' && f.id ? f.id : 'sf_' + Math.random().toString(36).substr(2, 10),
+		name:
+		    typeof f.name === 'string' && f.name.trim()
+			? f.name.trim()
+			: 'Pole ' + (idx + 1),
+		relativeSelector: String(f.relativeSelector).trim(),
+		scope: f.scope === 'document' ? 'document' : 'row',
+		rowRelativeSelector:
+		    typeof f.rowRelativeSelector === 'string' && f.rowRelativeSelector.trim()
+			? String(f.rowRelativeSelector).trim()
+			: ''
+	    };
+	})
+	.slice(0, 24);
+}
+
+/** Selektor dokumentu dla pola zapisanego względem body (ścieżka z buildera bez węzła body). */
+function enduxSubtableFieldDocumentCss(rel) {
+    if (!rel || typeof rel !== 'string') return '';
+    return 'body > ' + rel;
+}
+
+function enduxInvalidateSubtablePreviewRowIfStale() {
+    var rows = getGridDataRowsOnly();
+    if (!_gridSubtablePreviewRowEl || !rows.length) {
+	if (!rows.length) _gridSubtablePreviewRowEl = null;
+	return;
+    }
+    var ok = false;
+    for (var i = 0; i < rows.length; i++) {
+	if (rows[i] === _gridSubtablePreviewRowEl && rows[i].isConnected) {
+	    ok = true;
+	    break;
+	}
+    }
+    if (!ok) _gridSubtablePreviewRowEl = null;
+}
+
+/** Wiersz danych używany do podglądu wartości pól (klik w siatce na stronie lub domyślnie wiersz szablonu). */
+function enduxResolveSubtablePreviewContextRow() {
+    enduxInvalidateSubtablePreviewRowIfStale();
+    var rows = getGridDataRowsOnly();
+    if (!rows.length) return null;
+    if (_gridSubtablePreviewRowEl) return _gridSubtablePreviewRowEl;
+    if (_gridSelectedEl) {
+	for (var j = 0; j < rows.length; j++) {
+	    if (rows[j] === _gridSelectedEl) return rows[j];
+	}
+    }
+    return rows[0];
+}
+
+/** Tekst ścieżki do elementu docelowego (pod podglądem pola). */
+function enduxSubtableFieldPathDisplay(field) {
+    if (!field || typeof field !== 'object') return '';
+    var rr = field.rowRelativeSelector && String(field.rowRelativeSelector).trim();
+    var rel = typeof field.relativeSelector === 'string' ? field.relativeSelector.trim() : '';
+    if (field.scope === 'row' && rel) {
+	return 'wiersz siatki → ' + rel;
+    }
+    if (rr) {
+	return 'wiersz siatki → ' + rr;
+    }
+    if (!rel) return '—';
+    return 'dokument: ' + enduxSubtableFieldDocumentCss(rel);
+}
+
+function enduxClearSubtableFieldHoverHighlight() {
+    if (_enduxSubtableFieldHighlightEl && _enduxSubtableFieldHighlightEl.nodeType === 1) {
+	if (_enduxSubtableFieldHighlightStyle) {
+	    _enduxSubtableFieldHighlightEl.style.outline = _enduxSubtableFieldHighlightStyle.outline || '';
+	    _enduxSubtableFieldHighlightEl.style.outlineOffset = _enduxSubtableFieldHighlightStyle.outlineOffset || '';
+	}
+    }
+    _enduxSubtableFieldHighlightEl = null;
+    _enduxSubtableFieldHighlightStyle = null;
+}
+
+function enduxApplySubtableFieldHoverHighlight(field, contextRowEl) {
+    enduxClearSubtableFieldHoverHighlight();
+    if (!field || !contextRowEl) return;
+    var el = enduxSubtableFieldElementForRow(contextRowEl, field);
+    if (!el || !el.isConnected) return;
+    _enduxSubtableFieldHighlightEl = el;
+    _enduxSubtableFieldHighlightStyle = {
+	outline: el.style.outline,
+	outlineOffset: el.style.outlineOffset
+    };
+    el.style.outline = '2px dashed #7c3aed';
+    el.style.outlineOffset = '2px';
+}
+
+function _gridSubtablePreviewRowClick(e) {
+    if (!_gridPanelRoot) return;
+    if ((_gridPanelRoot.getAttribute('data-endux-grid-active-tab') || 'extract') !== 'subtable') return;
+    if (!e.target || e.target.nodeType !== 1) return;
+    if (isInsideEnduxExtensionUi(e.target)) return;
+    var rows = getGridDataRowsOnly();
+    if (!rows.length) return;
+    var t = e.target;
+    var depth = 0;
+    while (t && t.nodeType === 1 && depth < 80) {
+	for (var i = 0; i < rows.length; i++) {
+	    if (rows[i] === t) {
+		if (_gridSubtablePreviewRowEl !== rows[i]) {
+		    _gridSubtablePreviewRowEl = rows[i];
+		    updateGridPreviewUI();
+		}
+		return;
+	    }
+	}
+	t = t.parentElement;
+	depth++;
+    }
+}
+
+function enduxBindSubtablePreviewRowListener() {
+    if (_gridSubtablePreviewRowListenerBound) return;
+    _gridSubtablePreviewRowListenerBound = true;
+    document.addEventListener('click', _gridSubtablePreviewRowClick, false);
+}
+
+function enduxUnbindSubtablePreviewRowListener() {
+    if (!_gridSubtablePreviewRowListenerBound) return;
+    _gridSubtablePreviewRowListenerBound = false;
+    document.removeEventListener('click', _gridSubtablePreviewRowClick, false);
+}
+
+/** Podgląd wartości dla bieżącego wiersza kontekstu (klik w siatce w Podtabeli). */
+function enduxSubtableFieldSampleValue(field) {
+    var ctx = enduxResolveSubtablePreviewContextRow();
+    if (!ctx) return '—';
+    var el = null;
+    try {
+	el = enduxSubtableFieldElementForRow(ctx, field);
+    } catch (err) {
+	return '(błąd selektora)';
+    }
+    if (!el) return '(brak w wierszu)';
+    var txt = getPlainText(el);
+    return txt.length ? txt : '(pusty)';
+}
+
+function enduxRenderSubtableFieldsTableInPreview(previewWrap, fields) {
+    if (!previewWrap) return;
+    enduxClearSubtableFieldHoverHighlight();
+    previewWrap.innerHTML = '';
+    var table = document.createElement('table');
+    table.style.borderCollapse = 'collapse';
+    table.style.width = '100%';
+    table.style.fontSize = '12px';
+    var thead = document.createElement('thead');
+    var trh = document.createElement('tr');
+    ['Nazwa pola', ''].forEach(function(h, idx) {
+	var th = document.createElement('th');
+	if (idx === 0) th.textContent = h;
+	th.style.border = '1px solid #d4c4b8';
+	th.style.padding = '4px 6px';
+	th.style.fontWeight = '700';
+	th.style.background = '#dcfce7';
+	th.style.textAlign = idx === 1 ? 'center' : 'left';
+	if (idx === 1) th.style.width = '44px';
+	trh.appendChild(th);
+    });
+    thead.appendChild(trh);
+    table.appendChild(thead);
+    var tbody = document.createElement('tbody');
+    if (!fields.length) {
+	var tr0 = document.createElement('tr');
+	var td0 = document.createElement('td');
+	td0.colSpan = 2;
+	td0.textContent =
+	    'Brak pól — „Wskaż pole” i klik w dowolny element na stronie (tekst jak z komórki). Opcjonalnie najpierw wiersz w Ekstrakcji — wtedy ścieżka jest względem wiersza.';
+	td0.style.border = '1px solid #d4c4b8';
+	td0.style.padding = '8px';
+	td0.style.color = '#64748b';
+	td0.style.lineHeight = '1.4';
+	tr0.appendChild(td0);
+	tbody.appendChild(tr0);
+    }
+    fields.forEach(function(f) {
+	var tr = document.createElement('tr');
+	tr.setAttribute('data-endux-subtable-field-row', f.id);
+	var tdName = document.createElement('td');
+	var inp = document.createElement('input');
+	inp.type = 'text';
+	inp.value = f.name;
+	inp.setAttribute('data-subtable-field-id', f.id);
+	Object.assign(inp.style, {
+	    boxSizing: 'border-box',
+	    border: '1px solid #cbd5e1',
+	    borderRadius: '4px',
+	    padding: '4px 6px',
+	    fontSize: '12px',
+	    fontFamily: 'inherit'
+	});
+	inp.addEventListener('change', function() {
+	    chrome.storage.local.get(['gridSubtableFields'], function(res) {
+		if (chrome.runtime.lastError) return;
+		var list = enduxNormalizeSubtableFields(res.gridSubtableFields || []);
+		for (var i = 0; i < list.length; i++) {
+		    if (list[i].id === f.id) {
+			list[i].name = (inp.value || '').trim() || list[i].name;
+			break;
+		    }
+		}
+		chrome.storage.local.set({ gridSubtableFields: list });
+	    });
+	});
+	var nameRow = document.createElement('div');
+	nameRow.style.display = 'flex';
+	nameRow.style.alignItems = 'center';
+	nameRow.style.gap = '6px';
+	nameRow.style.minWidth = '0';
+	var infoMark = document.createElement('span');
+	infoMark.textContent = 'i';
+	infoMark.setAttribute('aria-hidden', 'true');
+	infoMark.title = 'Wartość odczytana ze ścieżki do tego pola';
+	Object.assign(infoMark.style, {
+	    flex: '0 0 auto',
+	    width: '18px',
+	    height: '18px',
+	    borderRadius: '50%',
+	    border: '1px solid #94a3b8',
+	    background: '#e2e8f0',
+	    color: '#475569',
+	    fontSize: '11px',
+	    fontWeight: '700',
+	    fontFamily: 'Georgia, "Times New Roman", serif',
+	    display: 'inline-flex',
+	    alignItems: 'center',
+	    justifyContent: 'center',
+	    lineHeight: '1',
+	    userSelect: 'none',
+	    flexShrink: '0'
+	});
+	var valInline = document.createElement('span');
+	valInline.setAttribute('data-endux-subtable-inline-value', '1');
+	var sampleVal = '';
+	try {
+	    sampleVal = enduxSubtableFieldSampleValue(f);
+	} catch (err) {
+	    sampleVal = '(błąd odczytu)';
+	}
+	valInline.textContent = sampleVal;
+	valInline.title = sampleVal;
+	Object.assign(valInline.style, {
+	    flex: '1 1 40%',
+	    minWidth: '0',
+	    fontSize: '12px',
+	    color: '#334155',
+	    lineHeight: '1.35',
+	    overflow: 'hidden',
+	    textOverflow: 'ellipsis',
+	    whiteSpace: 'nowrap'
+	});
+	inp.style.flex = '1';
+	inp.style.minWidth = '0';
+	nameRow.appendChild(inp);
+	nameRow.appendChild(infoMark);
+	nameRow.appendChild(valInline);
+	tdName.appendChild(nameRow);
+	if (_enduxSubtableDebugConfirm) {
+	    var pathLine = document.createElement('textarea');
+	    pathLine.readOnly = true;
+	    pathLine.setAttribute('data-subtable-path-readonly', '1');
+	    pathLine.setAttribute('data-endux-subtable-field-path', '1');
+	    pathLine.setAttribute('aria-label', 'Ścieżka selektora — można zaznaczyć i skopiować');
+	    pathLine.value = enduxSubtableFieldPathDisplay(f);
+	    pathLine.rows = 3;
+	    pathLine.wrap = 'soft';
+	    Object.assign(pathLine.style, {
+		marginTop: '6px',
+		width: '100%',
+		maxWidth: '100%',
+		boxSizing: 'border-box',
+		fontSize: '10px',
+		lineHeight: '1.45',
+		color: '#64748b',
+		fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+		border: '1px solid #e2e8f0',
+		borderRadius: '4px',
+		padding: '4px 6px',
+		resize: 'vertical',
+		cursor: 'text',
+		background: '#f8fafc',
+		userSelect: 'text'
+	    });
+	    pathLine.addEventListener('click', function(ev) {
+		ev.stopPropagation();
+	    });
+	    pathLine.addEventListener('mousedown', function(ev) {
+		ev.stopPropagation();
+	    });
+	    tdName.appendChild(pathLine);
+	}
+	tdName.style.border = '1px solid #d4c4b8';
+	tdName.style.padding = '4px 6px';
+	tr.addEventListener('mouseenter', function() {
+	    enduxApplySubtableFieldHoverHighlight(f, enduxResolveSubtablePreviewContextRow());
+	});
+	tr.addEventListener('mouseleave', function(ev) {
+	    if (tr.contains(ev.relatedTarget)) return;
+	    enduxClearSubtableFieldHoverHighlight();
+	});
+	var tdAct = document.createElement('td');
+	tdAct.style.border = '1px solid #d4c4b8';
+	tdAct.style.padding = '4px';
+	tdAct.style.textAlign = 'center';
+	var del = document.createElement('button');
+	del.type = 'button';
+	del.innerHTML = '🗑️';
+	del.title = 'Usuń pole';
+	del.setAttribute('aria-label', 'Usuń pole');
+	Object.assign(del.style, {
+	    border: 'none',
+	    background: 'transparent',
+	    cursor: 'pointer',
+	    color: '#b91c1c',
+	    fontSize: '16px',
+	    padding: '2px 6px',
+	    lineHeight: '1',
+	    fontFamily: 'inherit'
+	});
+	del.addEventListener('click', function(ev) {
+	    ev.preventDefault();
+	    ev.stopPropagation();
+	    chrome.storage.local.get(['gridSubtableFields'], function(res) {
+		if (chrome.runtime.lastError) return;
+		var list = enduxNormalizeSubtableFields(res.gridSubtableFields || []).filter(function(x) {
+		    return x.id !== f.id;
+		});
+		chrome.storage.local.set({ gridSubtableFields: list }, function() {
+		    if (chrome.runtime.lastError) return;
+		    updateGridPreviewUI();
+		});
+	    });
+	});
+	tdAct.appendChild(del);
+	tr.appendChild(tdName);
+	tr.appendChild(tdAct);
+	tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    previewWrap.appendChild(table);
+}
+
+function stopSubtableFieldPicker() {
+    if (!_subtableFieldPickerActive) return;
+    _subtableFieldPickerActive = false;
+    document.body.style.cursor = '';
+    _applySelectorPickerPanelPassThrough(false);
+    if (_subtableFieldPickerBanner) {
+	_subtableFieldPickerBanner.remove();
+	_subtableFieldPickerBanner = null;
+    }
+    if (_subtableFieldPickerHoverEl) {
+	_subtableFieldPickerHoverEl.style.outline = _subtableFieldPickerHoverEl._enduxFieldHoverOrigOutline || '';
+	_subtableFieldPickerHoverEl.style.cursor = _subtableFieldPickerHoverEl._enduxFieldHoverOrigCursor || '';
+	_subtableFieldPickerHoverEl = null;
+    }
+    document.removeEventListener('mouseover', _subtableFieldPickerMouseOver, true);
+    document.removeEventListener('mouseout', _subtableFieldPickerMouseOut, true);
+    document.removeEventListener('click', _subtableFieldPickerClick, true);
+    document.removeEventListener('keydown', _subtableFieldPickerKeyDown, true);
+}
+
+function _subtableFieldPickerMouseOver(e) {
+    if (!_subtableFieldPickerActive) return;
+    const t = e.target;
+    if (!t || t.nodeType !== 1) return;
+    if (isInsideEnduxExtensionUi(t)) return;
+    const nearF = _nearestClickable(t);
+    if (isInsideEnduxExtensionUi(nearF)) return;
+    if (_subtableFieldPickerHoverEl && _subtableFieldPickerHoverEl !== nearF) {
+	_subtableFieldPickerHoverEl.style.outline = _subtableFieldPickerHoverEl._enduxFieldHoverOrigOutline || '';
+	_subtableFieldPickerHoverEl.style.cursor = _subtableFieldPickerHoverEl._enduxFieldHoverOrigCursor || '';
+    }
+    _subtableFieldPickerHoverEl = nearF;
+    _subtableFieldPickerHoverEl._enduxFieldHoverOrigOutline = _subtableFieldPickerHoverEl.style.outline;
+    _subtableFieldPickerHoverEl._enduxFieldHoverOrigCursor = _subtableFieldPickerHoverEl.style.cursor;
+    _subtableFieldPickerHoverEl.style.outline = '2px dashed #7c3aed';
+    _subtableFieldPickerHoverEl.style.cursor = 'crosshair';
+}
+
+function _subtableFieldPickerMouseOut(e) {
+    if (!_subtableFieldPickerActive || !_subtableFieldPickerHoverEl) return;
+    const rel = e.relatedTarget;
+    if (rel && rel.nodeType === 1 && isInsideEnduxExtensionUi(rel)) return;
+    _subtableFieldPickerHoverEl.style.outline = _subtableFieldPickerHoverEl._enduxFieldHoverOrigOutline || '';
+    _subtableFieldPickerHoverEl.style.cursor = _subtableFieldPickerHoverEl._enduxFieldHoverOrigCursor || '';
+    _subtableFieldPickerHoverEl = null;
+}
+
+function enduxSubtablePickLeafFromPointerEvent(e) {
+    var t = e && e.target;
+    if (t && t.nodeType === 1) return t;
+    if (t && t.nodeType === 3 && t.parentElement) return t.parentElement;
+    var path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+    for (var i = 0; i < path.length; i++) {
+	if (path[i] && path[i].nodeType === 1) return path[i];
+    }
+    return null;
+}
+
+function enduxSubtableFindHostRowForPick(e, rows) {
+    var leaf = enduxSubtablePickLeafFromPointerEvent(e);
+    if (!leaf || leaf.nodeType !== 1) return null;
+    return enduxSubtableFindGridRowForSubtablePick(leaf, rows, e);
+}
+
+function _subtableFieldPickerClick(e) {
+    if (!_subtableFieldPickerActive) return;
+    var leaf = enduxSubtablePickLeafFromPointerEvent(e);
+    if (!leaf || leaf.nodeType !== 1) return;
+    if (isInsideEnduxExtensionUi(leaf)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rows = getGridDataRowsOnly();
+    var hostRow = enduxSubtableFindHostRowForPick(e, rows);
+    var scope = hostRow ? 'row' : 'document';
+    if (!hostRow) {
+	/* Brak dopasowania do wiersza (portal, shadow, wirtualizacja) — ścieżka od body, jak bez wiersza siatki. */
+	hostRow = document.body;
+	if (leaf === hostRow || leaf === document.documentElement) {
+	    showToast('Wskaż konkretny element na stronie (np. komórkę lub etykietę)', 'warning');
+	    return;
+	}
+    }
+    if (leaf === hostRow) {
+	showToast(
+	    scope === 'document'
+		? 'Wskaż element wewnątrz strony, nie sam kontener'
+		: 'Wskaż element wewnątrz wiersza, nie sam wiersz',
+	    'warning'
+	);
+	return;
+    }
+    var relFromHost = enduxBuildRelativeSelectorFromAncestor(hostRow, leaf);
+    if (!relFromHost) {
+	showToast(
+	    'Nie udało się zbudować ścieżki względnej — spróbuj elementu w widocznym drzewie komórki (bez zamkniętego Shadow DOM)',
+	    'error'
+	);
+	return;
+    }
+    /* derive/brute muszą widzieć pełną ścieżkę od body — przy trafionym wierszu relFromHost jest krótki i prefiks body→wiersz się nie zgadza. */
+    var relFromBody = enduxBuildRelativeSelectorFromAncestor(document.body, leaf);
+    var anchorRow = rows.length ? enduxSubtableFindGridRowForSubtablePick(leaf, rows, e) : null;
+    var baseRowRel = '';
+    if (anchorRow && anchorRow !== document.body) {
+	baseRowRel = enduxBuildRelativeSelectorFromAncestor(anchorRow, leaf);
+    }
+    var templateForShorten = anchorRow;
+    if (baseRowRel && templateForShorten && rows.length >= 2) {
+	baseRowRel = enduxTryShortenSubtableRowRelativeSelector(templateForShorten, leaf, baseRowRel);
+    }
+    if (!baseRowRel && relFromBody && rows.length) {
+	var derived = enduxSubtableTryDeriveRowScopeFromBodyPath(leaf, relFromBody, rows);
+	if (!derived) derived = enduxSubtableBruteRowRelativeFromBodyPath(leaf, relFromBody, rows);
+	if (derived) {
+	    baseRowRel = derived.suffix;
+	    templateForShorten = derived.templateRow;
+	    if (baseRowRel && templateForShorten && rows.length >= 2) {
+		if (templateForShorten.contains && templateForShorten.contains(leaf)) {
+		    baseRowRel = enduxTryShortenSubtableRowRelativeSelector(
+			templateForShorten,
+			leaf,
+			baseRowRel
+		    );
+		}
+	    }
+	}
+    }
+    var finalRel = relFromHost;
+    var finalScope = scope;
+    var upgradedFromDocument = false;
+    if (baseRowRel) {
+	/* Wspólna ścieżka względem wiersza siatki — ta sama dla każdej „podstrony”, bez body > … różniącego się nth-child. */
+	finalRel = baseRowRel;
+	finalScope = 'row';
+	upgradedFromDocument = scope === 'document';
+    }
+    stopSubtableFieldPicker();
+    chrome.storage.local.get(['gridSubtableFields'], function(res) {
+	if (chrome.runtime.lastError) {
+	    showToast('Błąd odczytu schowka pól: ' + chrome.runtime.lastError.message, 'error');
+	    return;
+	}
+	var list = enduxNormalizeSubtableFields(res.gridSubtableFields || []);
+	var nextN = list.length + 1;
+	var entry = {
+	    id: 'sf_' + Math.random().toString(36).substr(2, 10),
+	    name: 'Pole ' + nextN,
+	    relativeSelector: finalRel,
+	    scope: finalScope
+	};
+	list.push(entry);
+	chrome.storage.local.set({ gridSubtableFields: list }, function() {
+	    if (chrome.runtime.lastError) {
+		showToast('Nie zapisano pola: ' + chrome.runtime.lastError.message, 'error');
+		return;
+	    }
+	    showToast(
+		upgradedFromDocument
+		    ? 'Dodano pole — ścieżka względem wiersza siatki (wspólna dla każdego wiersza; nazwę możesz zmienić w podglądzie)'
+		    : 'Dodano pole — nazwę możesz zmienić w podglądzie',
+		'success'
+	    );
+	    updateGridPreviewUI();
+	});
+    });
+}
+
+function _subtableFieldPickerKeyDown(e) {
+    if (e.key === 'Escape') {
+	stopSubtableFieldPicker();
+	showToast('Wybieranie anulowane', 'warning');
+    }
+}
+
+function startSubtableFieldPicker() {
+    if (_subtableFieldPickerActive) stopSubtableFieldPicker();
+    if (_subtableExpandPickerActive) stopSubtableExpandPicker();
+    if (_gridPickerActive) stopGridPicker();
+    if (_pickerActive) stopSelectorPicker();
+    document.body.style.cursor = 'crosshair';
+    _subtableFieldPickerBanner = document.createElement('div');
+    _subtableFieldPickerBanner.id = ENDUX_SUBTABLE_FIELD_BANNER_ID;
+    Object.assign(_subtableFieldPickerBanner.style, {
+	position: 'fixed',
+	top: '0',
+	left: '0',
+	right: '0',
+	zIndex: '2147483647',
+	background: '#007bff',
+	color: '#fff',
+	padding: '8px 16px',
+	fontSize: '14px',
+	fontWeight: '600',
+	fontFamily: 'sans-serif',
+	boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+	pointerEvents: 'auto',
+	display: 'flex',
+	alignItems: 'center',
+	justifyContent: 'center',
+	flexWrap: 'wrap',
+	gap: '10px 14px',
+	boxSizing: 'border-box'
+    });
+    var msg = document.createElement('span');
+    msg.textContent =
+	'🎯 Kliknij element na stronie. Ścieżka zapisuje się względem wiersza siatki (krótsza, wspólna dla wierszy) — także przy panelu w portalu; w Ekstrakcji ustaw wiersz szablonu. Esc / Anuluj — nagłówek panelu.';
+    msg.style.lineHeight = '1.35';
+    var escHint = document.createElement('span');
+    escHint.textContent = 'Esc — anuluj';
+    escHint.style.opacity = '0.92';
+    escHint.style.fontSize = '13px';
+    var cancelTop = document.createElement('button');
+    cancelTop.type = 'button';
+    cancelTop.textContent = 'Anuluj wybór';
+    Object.assign(cancelTop.style, {
+	padding: '6px 14px',
+	borderRadius: '6px',
+	border: 'none',
+	background: '#fff',
+	color: '#007bff',
+	fontWeight: '700',
+	cursor: 'pointer',
+	fontSize: '13px',
+	fontFamily: 'inherit'
+    });
+    cancelTop.addEventListener('click', function(ev) {
+	ev.stopPropagation();
+	stopSubtableFieldPicker();
+	showToast('Wybieranie anulowane', 'warning');
+    });
+    _subtableFieldPickerBanner.appendChild(msg);
+    _subtableFieldPickerBanner.appendChild(escHint);
+    _subtableFieldPickerBanner.appendChild(cancelTop);
+    document.body.appendChild(_subtableFieldPickerBanner);
+    _applySelectorPickerPanelPassThrough(true);
+    _subtableFieldPickerActive = true;
+    document.addEventListener('mouseover', _subtableFieldPickerMouseOver, true);
+    document.addEventListener('mouseout', _subtableFieldPickerMouseOut, true);
+    document.addEventListener('click', _subtableFieldPickerClick, true);
+    document.addEventListener('keydown', _subtableFieldPickerKeyDown, true);
+}
+
+function enduxRefreshSubtableTabDisplays() {
+    if (!_gridPanelRoot) return;
+    chrome.storage.local.get(ENDUX_SUBTABLE_STORAGE_KEYS, function(r) {
+	if (chrome.runtime.lastError || !_gridPanelRoot) return;
+	enduxSyncSubtableExportCacheFromSlice(r || {});
+	enduxApplySubtableDisplaysToPanel(_gridPanelRoot, r || {});
+	updateGridPreviewUI();
+    });
+}
+
+function enduxApplySubtableDisplaysToPanel(root, r) {
+    if (!root) return;
+    var ex = root.querySelector('[data-grid-subtable-expand-display]');
+    var bk = root.querySelector('[data-grid-subtable-back-display]');
+    var expBtn = root.querySelector('[data-grid-subtable-expand-btn]');
+    var backBtn = root.querySelector('[data-grid-subtable-back-btn]');
+    var exp = (r.gridSubtableExpandRelative || '').trim();
+    var bs = (r.gridSubtableBackSelector || '').trim();
+    var hasExp = !!exp;
+    var hasBs = !!bs;
+    if (ex) {
+	ex.textContent = hasExp ? '✓ Wybrane' : 'Nie wybrano';
+	ex.title = hasExp ? exp : '';
+	ex.style.color = hasExp ? '#15803d' : '#64748b';
+	ex.style.fontWeight = hasExp ? '600' : '500';
+    }
+    if (bk) {
+	bk.textContent = hasBs ? '✓ Wybrane' : 'Nie wybrano';
+	bk.title = hasBs ? bs : '';
+	bk.style.color = hasBs ? '#15803d' : '#64748b';
+	bk.style.fontWeight = hasBs ? '600' : '500';
+    }
+    if (expBtn) {
+	if (hasExp) {
+	    expBtn.style.boxShadow = 'inset 0 0 0 2px #15803d';
+	    expBtn.setAttribute('data-endux-subtable-has-choice', '1');
+	} else {
+	    expBtn.style.boxShadow = '';
+	    expBtn.removeAttribute('data-endux-subtable-has-choice');
+	}
+    }
+    if (backBtn) {
+	if (hasBs) {
+	    backBtn.style.boxShadow = 'inset 0 0 0 2px #15803d';
+	    backBtn.setAttribute('data-endux-subtable-has-choice', '1');
+	} else {
+	    backBtn.style.boxShadow = '';
+	    backBtn.removeAttribute('data-endux-subtable-has-choice');
+	}
+    }
+}
+
+/**
+ * Widoczny element do kliknięcia (powrót / rozwinięcie) — unika pierwszego ukrytego dopasowania querySelector.
+ * Od końca listy: nakładki i widok szczegółów często są dopięte na końcu body.
+ */
+function enduxRoughlyVisibleForSubtableClick(el) {
+    if (!el || el.nodeType !== 1) return false;
+    try {
+	if (typeof el.checkVisibility === 'function' && !el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) {
+	    return false;
+	}
+    } catch (e0) {}
+    try {
+	if (el.closest('[hidden]')) return false;
+    } catch (e1) {}
+    try {
+	var ar = el.getAttribute && el.getAttribute('aria-hidden');
+	if (ar === 'true') return false;
+    } catch (e2) {}
+    try {
+	var rects = el.getClientRects();
+	if (!rects || rects.length === 0) return false;
+    } catch (e3) {}
+    if (el.offsetParent !== null) return true;
+    try {
+	var rect = el.getBoundingClientRect();
+	return rect.width > 0 && rect.height > 0;
+    } catch (e4) {
+	return false;
+    }
+}
+
+function enduxPickClickableForSubtableAction(el) {
+    if (!el || el.nodeType !== 1) return null;
+    var CLICKABLE_TAGS = ['A', 'BUTTON', 'INPUT', 'SELECT'];
+    var nextButton = el;
+    var isClickable =
+	CLICKABLE_TAGS.indexOf(nextButton.tagName) >= 0 ||
+	(nextButton.getAttribute && nextButton.getAttribute('role') === 'button') ||
+	(nextButton.getAttribute && nextButton.getAttribute('role') === 'link');
+    if (!isClickable) {
+	var node = nextButton.parentElement;
+	while (node && node !== document.body) {
+	    if (
+		CLICKABLE_TAGS.indexOf(node.tagName) >= 0 ||
+		(node.getAttribute && node.getAttribute('role') === 'button') ||
+		(node.getAttribute && node.getAttribute('role') === 'link')
+	    ) {
+		nextButton = node;
+		break;
+	    }
+	    node = node.parentElement;
+	}
+    }
+    return nextButton;
+}
+
+function enduxFindSubtableBackClickTarget(backSel) {
+    if (!backSel || typeof backSel !== 'string') return null;
+    var list = [];
+    try {
+	list = document.querySelectorAll(backSel.trim());
+    } catch (e) {
+	return null;
+    }
+    if (!list || !list.length) return null;
+    for (var i = list.length - 1; i >= 0; i--) {
+	var raw = list[i];
+	if (!raw || raw.nodeType !== 1) continue;
+	if (isInsideEnduxExtensionUi(raw)) continue;
+	var cand = enduxPickClickableForSubtableAction(raw);
+	if (!cand) continue;
+	if (!enduxRoughlyVisibleForSubtableClick(cand)) continue;
+	try {
+	    if (cand.disabled || cand.getAttribute('disabled') != null || cand.getAttribute('aria-disabled') === 'true') {
+		continue;
+	    }
+	} catch (e2) {}
+	try {
+	    if (cand.classList && cand.classList.contains('disabled')) continue;
+	} catch (e3) {}
+	try {
+	    var pe = window.getComputedStyle(cand).pointerEvents;
+	    if (pe === 'none') continue;
+	} catch (e4) {}
+	return cand;
+    }
+    return null;
+}
+
+function enduxClickSubtableNavControl(el) {
+    if (!el) return;
+    var target = enduxPickClickableForSubtableAction(el) || el;
+    var center = null;
+    try {
+	var r = target.getBoundingClientRect();
+	center = {
+	    clientX: r.left + r.width / 2,
+	    clientY: r.top + r.height / 2
+	};
+    } catch (eRect) {}
+    function fire(type, ctorName) {
+	try {
+	    var opts = { bubbles: true, cancelable: true, view: window };
+	    if (center) {
+		opts.clientX = center.clientX;
+		opts.clientY = center.clientY;
+	    }
+	    var Ctor = window[ctorName] || window.MouseEvent;
+	    target.dispatchEvent(new Ctor(type, opts));
+	} catch (eEvt) {}
+    }
+    fire('pointerdown', 'PointerEvent');
+    fire('mousedown', 'MouseEvent');
+    fire('pointerup', 'PointerEvent');
+    fire('mouseup', 'MouseEvent');
+    fire('click', 'MouseEvent');
+    try {
+	target.click();
+    } catch (e0) {}
+    try {
+	if (target.tagName === 'A' && target.href && !String(target.href).toLowerCase().startsWith('javascript')) {
+	    target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+	}
+    } catch (e1) {}
+}
+
+function enduxSubtableDispatchKeyboardActivate(el, key) {
+    if (!el || el.nodeType !== 1) return;
+    var k = key || 'Enter';
+    var code = k === ' ' ? 'Space' : k;
+    var keyCode = k === ' ' ? 32 : 13;
+    function fire(type) {
+	try {
+	    el.dispatchEvent(
+		new KeyboardEvent(type, {
+		    key: k,
+		    code: code,
+		    keyCode: keyCode,
+		    which: keyCode,
+		    bubbles: true,
+		    cancelable: true
+		})
+	    );
+	} catch (e) {}
+    }
+    try {
+	el.focus({ preventScroll: true });
+    } catch (e0) {}
+    fire('keydown');
+    fire('keyup');
+}
+
+async function enduxTryOpenSubtableFromTrigger(triggerEl, debugLabel) {
+    if (!triggerEl || triggerEl.nodeType !== 1) return false;
+    var btn = enduxPickClickableForSubtableAction(triggerEl) || triggerEl;
+    var before = '';
+    try {
+	before = btn.getAttribute && btn.getAttribute('aria-expanded');
+    } catch (e0) {}
+    var chain = [];
+    var n = btn;
+    var depth = 0;
+    while (n && n.nodeType === 1 && depth < 8) {
+	chain.push(n);
+	if (n === document.body) break;
+	n = n.parentElement;
+	depth++;
+    }
+    for (var i = 0; i < chain.length; i++) {
+	var cand = chain[i];
+	if (!cand || !cand.isConnected) continue;
+	var lbl = debugLabel || 'ROZWIŃ';
+	if (!(await enduxDebugConfirmSubtableClick(cand, lbl + ' próba ' + (i + 1)))) return false;
+	enduxClickSubtableNavControl(cand);
+	await enduxSleep(140);
+	try {
+	    var after0 = btn.getAttribute && btn.getAttribute('aria-expanded');
+	    if (before === 'false' && after0 === 'true') return true;
+	    if (before === 'true' && after0 === 'true') return true;
+	    if (before !== 'false' && after0 && after0 !== before) return true;
+	} catch (e1) {}
+	enduxSubtableDispatchKeyboardActivate(cand, 'Enter');
+	await enduxSleep(90);
+	enduxSubtableDispatchKeyboardActivate(cand, ' ');
+	await enduxSleep(120);
+	try {
+	    var after1 = btn.getAttribute && btn.getAttribute('aria-expanded');
+	    if (before === 'false' && after1 === 'true') return true;
+	    if (before !== 'false' && after1 && after1 !== before) return true;
+	} catch (e2) {}
+    }
+    return false;
+}
+
+async function enduxTryCloseSubtableFromTrigger(triggerEl, debugLabel) {
+    if (!triggerEl || triggerEl.nodeType !== 1) return false;
+    var btn = enduxPickClickableForSubtableAction(triggerEl) || triggerEl;
+    var before = '';
+    try {
+	before = btn.getAttribute && btn.getAttribute('aria-expanded');
+    } catch (e0) {}
+    if (before === 'false') return true;
+    var chain = [];
+    var n = btn;
+    var depth = 0;
+    while (n && n.nodeType === 1 && depth < 8) {
+	chain.push(n);
+	if (n === document.body) break;
+	n = n.parentElement;
+	depth++;
+    }
+    for (var i = 0; i < chain.length; i++) {
+	var cand = chain[i];
+	if (!cand || !cand.isConnected) continue;
+	var lbl = debugLabel || 'POWRÓT';
+	if (!(await enduxDebugConfirmSubtableClick(cand, lbl + ' próba ' + (i + 1)))) return false;
+	enduxClickSubtableNavControl(cand);
+	await enduxSleep(140);
+	try {
+	    var after0 = btn.getAttribute && btn.getAttribute('aria-expanded');
+	    if (after0 === 'false') return true;
+	} catch (e1) {}
+	enduxSubtableDispatchKeyboardActivate(cand, 'Enter');
+	await enduxSleep(90);
+	enduxSubtableDispatchKeyboardActivate(cand, ' ');
+	await enduxSleep(120);
+	try {
+	    var after1 = btn.getAttribute && btn.getAttribute('aria-expanded');
+	    if (after1 === 'false') return true;
+	} catch (e2) {}
+    }
+    return false;
+}
+
+async function enduxDebugConfirmSubtableClick(el, label) {
+    if (!_enduxSubtableDebugConfirm || !el || el.nodeType !== 1) return true;
+    var oldOutline = '';
+    var oldOffset = '';
+    try {
+	oldOutline = el.style.outline || '';
+	oldOffset = el.style.outlineOffset || '';
+	el.style.outline = '3px solid #ef4444';
+	el.style.outlineOffset = '2px';
+	el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' });
+    } catch (e0) {}
+    showToast(
+	'DEBUG podtabela: ' + (label || 'klik') + ' — Spacja = kontynuuj, Esc = przerwij',
+	'info'
+    );
+    var ok = await new Promise(function(resolve) {
+	var done = false;
+	function cleanup(v) {
+	    if (done) return;
+	    done = true;
+	    document.removeEventListener('keydown', onKey, true);
+	    resolve(v);
+	}
+	function onKey(e) {
+	    if (!e) return;
+	    if (e.code === 'Space' || e.key === ' ') {
+		e.preventDefault();
+		e.stopPropagation();
+		cleanup(true);
+		return;
+	    }
+	    if (e.key === 'Escape') {
+		e.preventDefault();
+		e.stopPropagation();
+		cleanup(false);
+	    }
+	}
+	document.addEventListener('keydown', onKey, true);
+    });
+    try {
+	el.style.outline = oldOutline;
+	el.style.outlineOffset = oldOffset;
+    } catch (e1) {}
+    return ok;
+}
+
+function enduxHasAnyVisibleGridDataRow() {
+    var rows = getGridDataRowsOnly();
+    if (!rows || !rows.length) return false;
+    for (var i = 0; i < rows.length; i++) {
+	var r = rows[i];
+	if (!r || !r.isConnected) continue;
+	if (enduxRoughlyVisibleForSubtableClick(r)) return true;
+    }
+    return false;
+}
+
+/** Przejście: rozwij → czekaj → powrót — dla każdego wiersza danych (gdy włączone w schowku / crawlerze). */
+async function enduxMaybeWalkSubtableRows(storageSlice) {
+    if (!storageSlice || storageSlice.gridSubtableEnabled !== true) return;
+    var rel = (storageSlice.gridSubtableExpandRelative || '').trim();
+    if (!rel) return;
+    var useHist = storageSlice.gridSubtableUseHistoryBack === true;
+    var backSel = (storageSlice.gridSubtableBackSelector || '').trim();
+    if (!useHist && !backSel) {
+	showToast('Podtabela: brak przycisku „Powrót” i wyłączony history.back — pomijam przejście', 'warning');
+	return;
+    }
+    var rows = getGridDataRowsOnly();
+    if (!rows.length) return;
+    var walkFields = enduxNormalizeSubtableFields((storageSlice && storageSlice.gridSubtableFields) || []);
+    enduxResetSubtableRowFieldCache();
+    var targetCount = rows.length;
+    var clickedCount = 0;
+    var url0 = '';
+    try {
+	url0 = String(location.href || '');
+    } catch (e0) {}
+    _enduxSubtableWalkProgress = { completed: 0, total: targetCount };
+    try {
+	updateGridPreviewUI();
+    } catch (eProg0) {}
+    showToast('Podtabela: przeglądam ' + targetCount + ' podstron (wierszy)…', 'info');
+    for (var i = 0; i < targetCount; i++) {
+	/* Po kliknięciu/powrocie tabela bywa renderowana od nowa — odśwież listę wierszy w każdej iteracji. */
+	var currentRows = getGridDataRowsOnly();
+	if (!currentRows.length) break;
+	var row = currentRows[Math.min(i, currentRows.length - 1)];
+	if (!row || !row.isConnected) continue;
+	var btn = null;
+	try {
+	    btn = row.querySelector(rel);
+	} catch (e1) {
+	    btn = null;
+	}
+	if (!btn && rel) {
+	    /* Gdy wskazany element był samym wierszem, rel bywa pusty/nieprzydatny; kliknij pierwszy sensowny element interaktywny. */
+	    try {
+		btn = row.querySelector('a[href],button,[role="button"],[data-action],td a,td button');
+	    } catch (e1b) {
+		btn = null;
+	    }
+	}
+	if (!btn) continue;
+	if (!(await enduxTryOpenSubtableFromTrigger(btn, 'ROZWIŃ wiersz ' + (i + 1) + '/' + targetCount))) {
+	    showToast('Podtabela: nie udało się rozwinąć wiersza (toggle nie zmienia stanu)', 'warning');
+	    break;
+	}
+	/* W chwili rozwinięcia odczytaj i zapamiętaj pola dla tego konkretnego wiersza. */
+	if (walkFields.length) {
+	    var openedRows = getGridDataRowsOnly();
+	    var openedRow = openedRows[Math.min(i, openedRows.length - 1)];
+	    if (openedRow && openedRow.isConnected) {
+		enduxRememberSubtableFieldValuesForRow(openedRow, walkFields);
+	    }
+	    try {
+		updateGridPreviewUI();
+	    } catch (ePrev) {}
+	}
+	var openedToggle = enduxPickClickableForSubtableAction(btn) || btn;
+	clickedCount++;
+	await enduxSleep(ENDUX_SUBTABLE_STEP_MS);
+	if (useHist) {
+	    try {
+		history.back();
+	    } catch (e3) {}
+	} else {
+	    var closed = false;
+	    if (openedToggle && openedToggle.isConnected) {
+		closed = await enduxTryCloseSubtableFromTrigger(openedToggle, 'POWRÓT wiersz ' + (i + 1) + '/' + targetCount);
+	    }
+	    var b = enduxFindSubtableBackClickTarget(backSel);
+	    if (!b) {
+		await enduxSleep(350);
+		b = enduxFindSubtableBackClickTarget(backSel);
+	    }
+	    if (!closed && b) {
+		closed = await enduxTryCloseSubtableFromTrigger(b, 'POWRÓT wiersz ' + (i + 1) + '/' + targetCount);
+	    }
+	    if (!closed && !b) {
+		showToast(
+		    'Podtabela: brak widocznego elementu powrotu (wiersz ' + (i + 1) + '/' + targetCount + ') — przerwano, by nie otwierać kolejnych podstron.',
+		    'warning'
+		);
+		break;
+	    }
+	    if (!closed) {
+		showToast('Podtabela: nie udało się zwinąć podtabeli (toggle nie zmienia stanu)', 'warning');
+		break;
+	    }
+	}
+	await enduxSleep(ENDUX_SUBTABLE_STEP_MS);
+	/* Część stron wymaga drugiego kliknięcia zamknięcia (np. ten sam toggle co rozwinięcie). */
+	if (!useHist && !enduxHasAnyVisibleGridDataRow()) {
+	    var b2 = enduxFindSubtableBackClickTarget(backSel);
+	    if (b2) {
+		if (!(await enduxTryCloseSubtableFromTrigger(b2, 'POWRÓT #2 wiersz ' + (i + 1) + '/' + targetCount))) {
+		    showToast('Podtabela: nie udało się zwinąć podtabeli w próbie #2', 'warning');
+		    break;
+		}
+		await enduxSleep(Math.max(260, Math.floor(ENDUX_SUBTABLE_STEP_MS * 0.7)));
+	    } else {
+		var rows2 = getGridDataRowsOnly();
+		var row2 = rows2.length ? rows2[Math.min(i, rows2.length - 1)] : null;
+		var btn2 = null;
+		if (row2 && row2.isConnected) {
+		    try {
+			btn2 = row2.querySelector(rel);
+		    } catch (e7) {
+			btn2 = null;
+		    }
+		}
+		if (btn2) {
+		    if (!(await enduxTryCloseSubtableFromTrigger(btn2, 'POWRÓT #2 (fallback) wiersz ' + (i + 1) + '/' + targetCount))) {
+			showToast('Podtabela: nie udało się zwinąć podtabeli fallbackiem #2', 'warning');
+			break;
+		    }
+		    await enduxSleep(Math.max(260, Math.floor(ENDUX_SUBTABLE_STEP_MS * 0.7)));
+		}
+	    }
+	}
+	if (useHist && url0) {
+	    try {
+		if (String(location.href || '') !== url0) {
+		    showToast('Podtabela: przerwano — zmienił się adres (history.back)', 'warning');
+		    break;
+		}
+	    } catch (e6) {}
+	}
+	_enduxSubtableWalkProgress.completed = (_enduxSubtableWalkProgress.completed | 0) + 1;
+	try {
+	    updateGridPreviewUI();
+	} catch (eProg1) {}
+    }
+    _enduxSubtableWalkProgress = null;
+    try {
+	updateGridPreviewUI();
+    } catch (eProg2) {}
+    if (clickedCount === 0) {
+	showToast('Podtabela: nie znaleziono klikalnego elementu w wierszach dla zapisanego selektora', 'warning');
+    }
 }
 
 function expandGridSelection() {
@@ -2237,92 +4322,203 @@ function cancelGridSelectionPathEdit() {
 
 function updateGridPreviewUI() {
     if (!_gridPanelRoot) return;
+    if (enduxGridPreviewEditShouldDeferDomRefresh()) return;
     refreshGridPanelSelectionIfStale();
-    const statusEl = _gridPanelRoot.querySelector('[data-grid-status]');
-    const pathEl = _gridPanelRoot.querySelector('[data-grid-selection-path]');
-    const pathTextEl = _gridPanelRoot.querySelector('[data-grid-selection-path-text]');
-    const previewWrap = _gridPanelRoot.querySelector('[data-grid-preview]');
-    if (!statusEl || !previewWrap) return;
-    if (!_gridSelectedEl) {
-	statusEl.textContent = 'Podgląd · brak wyboru' + (_gridHeaderRowEl ? ' (nagłówek: zapisany)' : '');
+    chrome.storage.local.get(ENDUX_SUBTABLE_STORAGE_KEYS, function(sub) {
+	if (!_gridPanelRoot) return;
+	if (enduxGridPreviewEditShouldDeferDomRefresh()) return;
+	if (chrome.runtime.lastError) {
+	    enduxSyncSubtableExportCacheFromSlice({});
+	} else {
+	    enduxSyncSubtableExportCacheFromSlice(sub || {});
+	}
+
+	const statusEl = _gridPanelRoot.querySelector('[data-grid-status]');
+	const pathEl = _gridPanelRoot.querySelector('[data-grid-selection-path]');
+	const pathTextEl = _gridPanelRoot.querySelector('[data-grid-selection-path-text]');
+	const previewWrap = _gridPanelRoot.querySelector('[data-grid-preview]');
+	if (!statusEl || !previewWrap) return;
+
+	var subFields = enduxNormalizeSubtableFields((sub || {}).gridSubtableFields || []);
+
+	var activeTab = _gridPanelRoot.getAttribute('data-endux-grid-active-tab') || 'extract';
+
+	function hidePathBlock() {
+	    if (pathEl) {
+		pathEl.style.display = 'none';
+		_gridPathEditActive = false;
+		setGridSelectionPathEditMode(false);
+		if (pathTextEl) {
+		    pathTextEl.textContent = '';
+		    pathTextEl.removeAttribute('title');
+		}
+	    }
+	}
+
+	function applyPathBlockForSelection() {
+	    if (pathEl && pathTextEl && _gridSelectedEl && _gridSelectedEl.isConnected && !isInsideEnduxGridPanel(_gridSelectedEl)) {
+		var fullPath = enduxGridCompactElementPath(_gridSelectedEl);
+		if (fullPath) {
+		    pathEl.style.display = 'flex';
+		    if (!_gridPathEditActive) {
+			pathTextEl.textContent = enduxTruncateMiddle(fullPath, 280);
+			pathTextEl.title = fullPath;
+		    }
+		} else {
+		    pathEl.style.display = 'none';
+		    _gridPathEditActive = false;
+		    setGridSelectionPathEditMode(false);
+		    pathTextEl.textContent = '';
+		    pathTextEl.removeAttribute('title');
+		}
+	    } else if (pathEl) {
+		pathEl.style.display = 'none';
+		_gridPathEditActive = false;
+		setGridSelectionPathEditMode(false);
+		if (pathTextEl) {
+		    pathTextEl.textContent = '';
+		    pathTextEl.removeAttribute('title');
+		}
+	    }
+	}
+
+	if (activeTab === 'subtable') {
+	    if (!_gridSelectedEl) {
+		statusEl.textContent =
+		    'Podtabela · brak wiersza danych — w zakładce „Ekstrakcja wyników” wskaż wiersz (Wskaż element), potem wróć tutaj' +
+		    enduxSubtableWalkProgressSuffix();
+		hidePathBlock();
+		if (!previewWrap.isConnected || !_gridPanelRoot) return;
+		enduxRenderSubtableFieldsTableInPreview(previewWrap, subFields);
+		updateGridCopyButtonLabel();
+		return;
+	    }
+	    var dataRowsSt = getGridDataRowsOnly();
+	    var colCountSt = computeGridExportColumnCount();
+	    var ctxRowSt = enduxResolveSubtablePreviewContextRow();
+	    var ctxIdxSt = ctxRowSt && dataRowsSt.length ? dataRowsSt.indexOf(ctxRowSt) : -1;
+	    var statusTextSt =
+		'Podtabela · podgląd wartości: wiersz ' +
+		(ctxIdxSt >= 0 ? ctxIdxSt + 1 : '1') +
+		'/' +
+		dataRowsSt.length +
+		' (klik w inny wiersz danych na stronie zmienia kontekst)';
+	    if (colCountSt) statusTextSt += ' · kolumn siatki: ' + colCountSt;
+	    statusTextSt += _gridHeaderRowEl ? ' · nagłówek: tak' : ' · nagłówek: nie';
+	    statusEl.textContent = statusTextSt + enduxSubtableWalkProgressSuffix();
+	    /* Karta „Wskazany element” dotyczy tylko Ekstrakcji — na Podtabeli jej nie pokazujemy. */
+	    hidePathBlock();
+	    if (!previewWrap.isConnected || !_gridPanelRoot) return;
+	    if ((_gridPanelRoot.getAttribute('data-endux-grid-active-tab') || 'extract') !== 'subtable') return;
+	    enduxRenderSubtableFieldsTableInPreview(previewWrap, subFields);
+	    updateGridCopyButtonLabel();
+	    return;
+	}
+
+	if (!_gridSelectedEl) {
+	    statusEl.textContent =
+		'Podgląd · brak wyboru' + (_gridHeaderRowEl ? ' (nagłówek: zapisany)' : '') + enduxSubtableWalkProgressSuffix();
+	    previewWrap.innerHTML = '';
+	    hidePathBlock();
+	    updateGridCopyButtonLabel();
+	    return;
+	}
+	const dataRows = getGridDataRowsOnly();
+	const baseColCount = computeGridExportBaseColumnCount();
+	const mergedBase =
+	    _gridHeaderRowEl && _gridHeaderRowEl.isConnected
+		? enduxMergeExportedHeaderBaseCells(baseColCount)
+		: [];
+	var skipDupHeader =
+	    _gridHeaderRowEl &&
+	    dataRows.length > 0 &&
+	    enduxShouldHideFirstDataRowAfterMergedHeader(dataRows, baseColCount);
+	var bodyRowsFull = enduxGridDataRowsForBodyExport(baseColCount);
+	var PREVIEW_MAX_ROWS = 5;
+	var previewRows;
+	if (_enduxSubtableWalkProgress && (_enduxSubtableWalkProgress.total | 0) > 0) {
+	    var prDone = Math.min(
+		_enduxSubtableWalkProgress.completed | 0,
+		bodyRowsFull.length
+	    );
+	    if (prDone <= 0) {
+		previewRows = bodyRowsFull.slice(0, Math.min(PREVIEW_MAX_ROWS, bodyRowsFull.length));
+	    } else {
+		var winStart = Math.max(0, prDone - PREVIEW_MAX_ROWS);
+		previewRows = bodyRowsFull.slice(winStart, prDone);
+	    }
+	} else {
+	    previewRows = bodyRowsFull.slice(0, Math.min(PREVIEW_MAX_ROWS, bodyRowsFull.length));
+	}
+	const colCount = computeGridExportColumnCount();
+	let statusText = 'Podgląd · kolumn: ' + colCount;
+	statusText += _gridHeaderRowEl ? ', nagłówek: tak' : ', nagłówek: nie';
+	statusText += ' · wierszy danych: ' + previewRows.length + ' (z ' + dataRows.length + ')';
+	if (_enduxSubtableWalkProgress && (_enduxSubtableWalkProgress.total | 0) > 0) {
+	    statusText += ' · podstrony: ostatnio przetworzone na dole';
+	}
+	statusEl.textContent = statusText + enduxSubtableWalkProgressSuffix();
+	applyPathBlockForSelection();
+	const table = document.createElement('table');
+	table.style.borderCollapse = 'collapse';
+	table.style.width = '100%';
+	table.style.fontSize = '12px';
+	function appendCells(tr, texts, isHeader) {
+	    texts.forEach(function(txt) {
+		const td = document.createElement('td');
+		td.textContent = txt;
+		td.style.border = '1px solid #d4c4b8';
+		td.style.padding = '4px 6px';
+		td.style.maxWidth = '160px';
+		td.style.overflow = 'hidden';
+		td.style.textOverflow = 'ellipsis';
+		td.style.whiteSpace = 'nowrap';
+		if (isHeader) {
+		    td.style.fontWeight = '700';
+		    td.style.background = '#dcfce7';
+		}
+		tr.appendChild(td);
+	    });
+	}
+	if (_gridHeaderRowEl) {
+	    const trH = document.createElement('tr');
+	    var hCells = padCellsToColumnCount(mergedBase, baseColCount);
+	    if (_enduxSubtableExportEnabled) {
+		_enduxSubtableExportFields.forEach(function(f) {
+		    hCells.push(f.name);
+		});
+	    }
+	    appendCells(trH, hCells, true);
+	    table.appendChild(trH);
+	}
+	previewRows.forEach(function(r) {
+	    const tr = document.createElement('tr');
+	    var rCells = padCellsToColumnCount(rowDirectCellTexts(r), baseColCount);
+	    if (_enduxSubtableExportEnabled) {
+		_enduxSubtableExportFields.forEach(function(f) {
+		    rCells.push(enduxSubtableFieldTextForRow(r, f));
+		});
+	    }
+	    appendCells(tr, rCells, false);
+	    table.appendChild(tr);
+	});
 	previewWrap.innerHTML = '';
-	if (pathEl) {
-	    pathEl.style.display = 'none';
-	    _gridPathEditActive = false;
-	    setGridSelectionPathEditMode(false);
-	    if (pathTextEl) {
-		pathTextEl.textContent = '';
-		pathTextEl.removeAttribute('title');
+	previewWrap.appendChild(table);
+	if (_enduxSubtableWalkProgress && (_enduxSubtableWalkProgress.total | 0) > 0) {
+	    try {
+		requestAnimationFrame(function() {
+		    try {
+			previewWrap.scrollTop = previewWrap.scrollHeight;
+		    } catch (eSc) {}
+		});
+	    } catch (eRaf) {
+		try {
+		    previewWrap.scrollTop = previewWrap.scrollHeight;
+		} catch (eSc2) {}
 	    }
 	}
 	updateGridCopyButtonLabel();
-	return;
-    }
-    const dataRows = getGridDataRowsOnly();
-    const previewRows = dataRows.slice(0, 5);
-    const colCount = computeGridExportColumnCount();
-    let statusText = 'Podgląd · kolumn: ' + colCount;
-    statusText += _gridHeaderRowEl ? ', nagłówek: tak' : ', nagłówek: nie';
-    statusText += ' · wierszy danych: ' + previewRows.length + ' (z ' + dataRows.length + ')';
-    statusEl.textContent = statusText;
-    if (pathEl && pathTextEl && _gridSelectedEl.isConnected && !isInsideEnduxGridPanel(_gridSelectedEl)) {
-	var fullPath = enduxGridCompactElementPath(_gridSelectedEl);
-	if (fullPath) {
-	    pathEl.style.display = 'flex';
-	    if (!_gridPathEditActive) {
-		pathTextEl.textContent = enduxTruncateMiddle(fullPath, 280);
-		pathTextEl.title = fullPath;
-	    }
-	} else {
-	    pathEl.style.display = 'none';
-	    _gridPathEditActive = false;
-	    setGridSelectionPathEditMode(false);
-	    pathTextEl.textContent = '';
-	    pathTextEl.removeAttribute('title');
-	}
-    } else if (pathEl) {
-	pathEl.style.display = 'none';
-	_gridPathEditActive = false;
-	setGridSelectionPathEditMode(false);
-	if (pathTextEl) {
-	    pathTextEl.textContent = '';
-	    pathTextEl.removeAttribute('title');
-	}
-    }
-    const table = document.createElement('table');
-    table.style.borderCollapse = 'collapse';
-    table.style.width = '100%';
-    table.style.fontSize = '12px';
-    function appendCells(tr, texts, isHeader) {
-	texts.forEach(function(txt) {
-	    const td = document.createElement('td');
-	    td.textContent = txt;
-	    td.style.border = '1px solid #d4c4b8';
-	    td.style.padding = '4px 6px';
-	    td.style.maxWidth = '160px';
-	    td.style.overflow = 'hidden';
-	    td.style.textOverflow = 'ellipsis';
-	    td.style.whiteSpace = 'nowrap';
-	    if (isHeader) {
-		td.style.fontWeight = '700';
-		td.style.background = '#dcfce7';
-	    }
-	    tr.appendChild(td);
-	});
-    }
-    if (_gridHeaderRowEl) {
-	const trH = document.createElement('tr');
-	appendCells(trH, padCellsToColumnCount(rowDirectCellTexts(_gridHeaderRowEl), colCount), true);
-	table.appendChild(trH);
-    }
-    previewRows.forEach(function(r) {
-	const tr = document.createElement('tr');
-	appendCells(tr, padCellsToColumnCount(rowDirectCellTexts(r), colCount), false);
-	table.appendChild(tr);
     });
-    previewWrap.innerHTML = '';
-    previewWrap.appendChild(table);
-    updateGridCopyButtonLabel();
 }
 
 /**
@@ -2334,13 +4530,20 @@ function enduxGetGridPanelAutoAppendPayload() {
     if (!_gridSelectedEl.isConnected || isInsideEnduxGridPanel(_gridSelectedEl)) return null;
     var dataRows = getGridDataRowsOnly();
     if (dataRows.length === 0) return null;
+    var baseColCount = computeGridExportBaseColumnCount();
     var colCount = computeGridExportColumnCount();
     if (colCount === 0) return null;
-    var bodyText = buildTsvFromRows(dataRows, colCount).replace(/\n$/, '');
+    var bodyRows = enduxGridDataRowsForBodyExport(baseColCount);
+    if (bodyRows.length === 0) return null;
+    var bodyText = buildTsvFromRows(bodyRows, baseColCount).replace(/\n$/, '');
+    var extra = enduxSubtableExportExtraColCount();
     var includeGridHeader = !!(_gridHeaderRowEl && _gridHeaderRowEl.isConnected);
     var headerLine = null;
     if (includeGridHeader) {
-	headerLine = padCellsToColumnCount(rowDirectCellTexts(_gridHeaderRowEl), colCount).join('\t');
+	headerLine = enduxBuildGridExportHeaderLineWithSubtable(baseColCount);
+    } else if (extra > 0) {
+	headerLine = enduxBuildSyntheticSubtableHeaderLine(baseColCount);
+	includeGridHeader = true;
     }
     return { bodyText: bodyText, headerLine: headerLine, includeGridHeader: includeGridHeader };
 }
@@ -2350,59 +4553,85 @@ function copyGridFromPanel(append) {
 	showToast('Najpierw wskaż wiersz danych (div)', 'warning');
 	return;
     }
-    const dataRows = getGridDataRowsOnly();
-    if (dataRows.length === 0) {
+    if (!getGridDataRowsOnly().length) {
 	showToast('Brak wierszy danych — wskaż wiersz szablonu lub usuń nagłówek z listy', 'warning');
 	return;
     }
-    const colCount = computeGridExportColumnCount();
-    if (colCount === 0) {
-	showToast('Brak kolumn do eksportu', 'warning');
-	return;
-    }
-    const bodyText = buildTsvFromRows(dataRows, colCount).replace(/\n$/, '');
-    // Nagłówek z „Ustaw nagłówek” (zielony w podglądzie) — nie zależy od przełącznika „Z nagłówkiem” (ten dotyczy tabel HTML).
-    var includeGridHeader = !!(_gridHeaderRowEl && _gridHeaderRowEl.isConnected);
-    var headerLine = null;
-    if (includeGridHeader) {
-	headerLine = padCellsToColumnCount(rowDirectCellTexts(_gridHeaderRowEl), colCount).join('\t');
-    }
 
-    function finishGridCopy(fullTextForClipboard) {
-	copyTsvTextToClipboard(fullTextForClipboard, bodyText, append, false).then(function(res) {
-	    if (res.isDuplicate) return;
-	    if (res.success) {
-		showToast(append ? '📋 Siatka dołączona do schowka' : '📋 Siatka skopiowana', 'success', res.rowCount);
-		updateAllClipboardInfo();
+    var keysForGet = ENDUX_SUBTABLE_STORAGE_KEYS.slice();
+    if (append) keysForGet.push('accumulatedClipboard');
+
+    chrome.storage.local.get(keysForGet, function(st) {
+	if (chrome.runtime.lastError) return;
+	enduxSyncSubtableExportCacheFromSlice(st || {});
+	(async function() {
+	    try {
+		if (_gridSelectedEl && _gridSelectedEl.isConnected && !isInsideEnduxGridPanel(_gridSelectedEl)) {
+		    await enduxMaybeWalkSubtableRows(st);
+		}
+	    } catch (e) {}
+	    var dataRows = getGridDataRowsOnly();
+	    if (dataRows.length === 0) {
+		showToast('Brak wierszy danych (po podtabeli)', 'warning');
+		return;
 	    }
-	});
-    }
+	    var baseColCount = computeGridExportBaseColumnCount();
+	    var colCount = computeGridExportColumnCount();
+	    if (colCount === 0) {
+		showToast('Brak kolumn do eksportu', 'warning');
+		return;
+	    }
+	    var bodyRows = enduxGridDataRowsForBodyExport(baseColCount);
+	    if (bodyRows.length === 0) {
+		showToast('Po scaleniu nagłówka brak wierszy danych do eksportu', 'warning');
+		return;
+	    }
+	    var bodyText = buildTsvFromRows(bodyRows, baseColCount).replace(/\n$/, '');
+	    var extra = enduxSubtableExportExtraColCount();
+	    var includeGridHeader = !!(_gridHeaderRowEl && _gridHeaderRowEl.isConnected);
+	    var headerLine = null;
+	    if (includeGridHeader) {
+		headerLine = enduxBuildGridExportHeaderLineWithSubtable(baseColCount);
+	    } else if (extra > 0) {
+		headerLine = enduxBuildSyntheticSubtableHeaderLine(baseColCount);
+		includeGridHeader = true;
+	    }
 
-    if (append) {
-	chrome.storage.local.get(['accumulatedClipboard'], function(result) {
-	    if (chrome.runtime.lastError) return;
-	    var existing = (result.accumulatedClipboard || '').trim();
-	    var chunk;
-	    if (includeGridHeader && headerLine) {
-		// Pierwsze dołączenie (pusty bufor): nagłówek + dane; kolejne strony — tylko wiersze danych.
-		chunk = existing.length ? bodyText : (headerLine + '\n' + bodyText);
+	    function finishGridCopy(fullTextForClipboard) {
+		copyTsvTextToClipboard(fullTextForClipboard, bodyText, append, false).then(function(res) {
+		    if (res.isDuplicate) return;
+		    if (res.success) {
+			showToast(append ? '📋 Siatka dołączona do schowka' : '📋 Siatka skopiowana', 'success', res.rowCount);
+			updateAllClipboardInfo();
+		    }
+		});
+	    }
+
+	    if (append) {
+		var existing = ((st && st.accumulatedClipboard) || '').trim();
+		var chunk;
+		if (includeGridHeader && headerLine) {
+		    chunk = existing.length ? bodyText : (headerLine + '\n' + bodyText);
+		} else {
+		    chunk = bodyText;
+		}
+		finishGridCopy(chunk);
 	    } else {
-		chunk = bodyText;
+		var fullText = bodyText;
+		if (includeGridHeader && headerLine) fullText = headerLine + '\n' + bodyText;
+		finishGridCopy(fullText);
 	    }
-	    finishGridCopy(chunk);
-	});
-	return;
-    }
-
-    var fullText = bodyText;
-    if (includeGridHeader && headerLine) {
-	fullText = headerLine + '\n' + bodyText;
-    }
-    finishGridCopy(fullText);
+	})().catch(function() {});
+    });
 }
 
 function removeGridExtractorPanel(skipSaveUiState) {
     stopGridPicker();
+    stopSubtableExpandPicker();
+    stopSubtableFieldPicker();
+    enduxUnbindSubtablePreviewRowListener();
+    enduxClearSubtableFieldHoverHighlight();
+    _gridSubtablePreviewRowEl = null;
     clearGridSelectionOutline();
     clearGridHeaderVisual();
     _gridUndoStack = [];
@@ -2629,15 +4858,32 @@ function injectGridExtractorPanel() {
     tabBtnCrawl.setAttribute('data-endux-grid-tab', 'crawler');
     Object.assign(tabBtnCrawl.style, {
 	flex: '1',
-	padding: '10px 12px',
+	padding: '10px 8px',
 	border: 'none',
 	background: '#d1d5db',
 	fontWeight: '500',
 	cursor: 'pointer',
-	fontSize: '13px',
+	fontSize: '12px',
 	color: '#4b5563',
 	fontFamily: 'inherit'
     });
+    const tabBtnSubtable = document.createElement('button');
+    tabBtnSubtable.type = 'button';
+    tabBtnSubtable.textContent = 'Podtabela';
+    tabBtnSubtable.setAttribute('data-endux-grid-tab', 'subtable');
+    Object.assign(tabBtnSubtable.style, {
+	flex: '1',
+	padding: '10px 8px',
+	border: 'none',
+	background: '#d1d5db',
+	fontWeight: '500',
+	cursor: 'pointer',
+	fontSize: '12px',
+	color: '#4b5563',
+	fontFamily: 'inherit'
+    });
+    tabBtnExtract.style.padding = '10px 8px';
+    tabBtnExtract.style.fontSize = '12px';
     tabBtnExtract.addEventListener('click', function() {
 	switchGridPanelTab('extract');
 	loadAndApplyGridPanelSplitWidth();
@@ -2645,8 +4891,13 @@ function injectGridExtractorPanel() {
     tabBtnCrawl.addEventListener('click', function() {
 	switchGridPanelTab('crawler');
     });
+    tabBtnSubtable.addEventListener('click', function() {
+	switchGridPanelTab('subtable');
+	loadAndApplyGridPanelSplitWidth();
+    });
     tabBar.appendChild(tabBtnExtract);
     tabBar.appendChild(tabBtnCrawl);
+    tabBar.appendChild(tabBtnSubtable);
 
     const tabHost = document.createElement('div');
     tabHost.setAttribute('data-endux-grid-tab-host', '1');
@@ -2956,71 +5207,10 @@ function injectGridExtractorPanel() {
 	minWidth: '0'
     });
 
-    const clipboardInfoContainer = document.createElement('span');
-    Object.assign(clipboardInfoContainer.style, {
-	display: 'inline-flex',
-	alignItems: 'center',
-	gap: '6px',
-	flexWrap: 'wrap'
-    });
-
-    const clipboardInfo = document.createElement('span');
-    clipboardInfo.id = 'clipboard-info-' + Math.random().toString(36).substr(2, 9);
-    clipboardInfo.setAttribute('data-endux-grid-clipboard', '1');
-    Object.assign(clipboardInfo.style, {
-	fontSize: '13px',
-	color: '#6c757d',
-	fontWeight: '500',
-	cursor: 'pointer',
-	textDecoration: 'underline'
-    });
-    clipboardInfo.title = 'Kliknij, aby otworzyć zawartość schowka w nowej zakładce';
-    clipboardInfo.addEventListener('mouseenter', function() {
-	clipboardInfo.style.color = '#2563eb';
-    });
-    clipboardInfo.addEventListener('mouseleave', function() {
-	clipboardInfo.style.color = '#6c757d';
-    });
-    clipboardInfo.addEventListener('click', function(e) {
-	e.stopPropagation();
-	openClipboardInNewTab();
-    });
-
-    const gridClearClipboardBtn = document.createElement('button');
-    gridClearClipboardBtn.type = 'button';
-    gridClearClipboardBtn.innerHTML = '🗑️';
-    gridClearClipboardBtn.title = 'Wyczyść schowek';
-    Object.assign(gridClearClipboardBtn.style, {
-	background: 'none',
-	border: 'none',
-	cursor: 'pointer',
-	padding: '2px 4px',
-	fontSize: '14px',
-	lineHeight: '1',
-	opacity: '0.65'
-    });
-    gridClearClipboardBtn.addEventListener('mouseenter', function() {
-	gridClearClipboardBtn.style.opacity = '1';
-    });
-    gridClearClipboardBtn.addEventListener('mouseleave', function() {
-	gridClearClipboardBtn.style.opacity = '0.65';
-    });
-    gridClearClipboardBtn.addEventListener('click', function(e) {
-	e.stopPropagation();
-	chrome.storage.local.remove(['accumulatedClipboard', 'clipboardHashes'], function() {
-	    updateAllClipboardInfo();
-	    showToast('🗑️ Schowek wyczyszczony', 'success');
-	});
-    });
-
-    clipboardInfoContainer.appendChild(clipboardInfo);
-    clipboardInfoContainer.appendChild(gridClearClipboardBtn);
-
     copyMetaRow.appendChild(includeHdrToggle.wrap);
     copyMetaRow.appendChild(includeHdrLbl);
     copyMetaRow.appendChild(appendToggle.wrap);
     copyMetaRow.appendChild(appendLbl);
-    copyMetaRow.appendChild(clipboardInfoContainer);
 
     copyBlock.appendChild(copyBtn);
     copyBlock.appendChild(copyMetaRow);
@@ -3068,9 +5258,87 @@ function injectGridExtractorPanel() {
     });
     const status = document.createElement('div');
     status.setAttribute('data-grid-status', '1');
-    status.style.fontWeight = '600';
-    status.style.fontSize = '13px';
+    Object.assign(status.style, {
+	fontWeight: '600',
+	fontSize: '13px',
+	flex: '1',
+	minWidth: '0'
+    });
     status.textContent = 'Podgląd · brak wyboru';
+
+    const clipboardInfoContainer = document.createElement('span');
+    Object.assign(clipboardInfoContainer.style, {
+	display: 'inline-flex',
+	alignItems: 'center',
+	gap: '6px',
+	flexWrap: 'wrap',
+	flexShrink: '0'
+    });
+
+    const clipboardInfo = document.createElement('span');
+    clipboardInfo.id = 'clipboard-info-' + Math.random().toString(36).substr(2, 9);
+    clipboardInfo.setAttribute('data-endux-grid-clipboard', '1');
+    Object.assign(clipboardInfo.style, {
+	fontSize: '13px',
+	color: ENDUX_CLIPBOARD_ROW_COUNT_COLOR,
+	fontWeight: '500',
+	cursor: 'pointer',
+	textDecoration: 'underline'
+    });
+    clipboardInfo.title = 'Kliknij, aby otworzyć zawartość schowka w nowej zakładce';
+    clipboardInfo.addEventListener('mouseenter', function() {
+	clipboardInfo.style.color = ENDUX_CLIPBOARD_ROW_COUNT_HOVER;
+    });
+    clipboardInfo.addEventListener('mouseleave', function() {
+	clipboardInfo.style.color = ENDUX_CLIPBOARD_ROW_COUNT_COLOR;
+    });
+    clipboardInfo.addEventListener('click', function(e) {
+	e.stopPropagation();
+	openClipboardInNewTab();
+    });
+
+    const gridClearClipboardBtn = document.createElement('button');
+    gridClearClipboardBtn.type = 'button';
+    gridClearClipboardBtn.innerHTML = '🗑️';
+    gridClearClipboardBtn.title = 'Wyczyść schowek';
+    Object.assign(gridClearClipboardBtn.style, {
+	background: 'none',
+	border: 'none',
+	cursor: 'pointer',
+	padding: '2px 4px',
+	fontSize: '14px',
+	lineHeight: '1',
+	opacity: '0.65'
+    });
+    gridClearClipboardBtn.addEventListener('mouseenter', function() {
+	gridClearClipboardBtn.style.opacity = '1';
+    });
+    gridClearClipboardBtn.addEventListener('mouseleave', function() {
+	gridClearClipboardBtn.style.opacity = '0.65';
+    });
+    gridClearClipboardBtn.addEventListener('click', function(e) {
+	e.stopPropagation();
+	chrome.storage.local.remove(['accumulatedClipboard', 'clipboardHashes'], function() {
+	    updateAllClipboardInfo();
+	    showToast('🗑️ Schowek wyczyszczony', 'success');
+	});
+    });
+
+    clipboardInfoContainer.appendChild(clipboardInfo);
+    clipboardInfoContainer.appendChild(gridClearClipboardBtn);
+
+    const statusRow = document.createElement('div');
+    Object.assign(statusRow.style, {
+	display: 'flex',
+	alignItems: 'center',
+	justifyContent: 'space-between',
+	gap: '12px',
+	width: '100%',
+	minWidth: '0',
+	flexShrink: '0'
+    });
+    statusRow.appendChild(status);
+    statusRow.appendChild(clipboardInfoContainer);
 
     const selectionPath = document.createElement('div');
     selectionPath.setAttribute('data-grid-selection-path', '1');
@@ -3252,8 +5520,21 @@ function injectGridExtractorPanel() {
     preview.style.border = '1px solid #e8d5c4';
     preview.style.borderRadius = '6px';
     preview.style.padding = '6px';
+    preview.addEventListener(
+	'mousedown',
+	function() {
+	    if (!_gridPanelRoot) return;
+	    if ((_gridPanelRoot.getAttribute('data-endux-grid-active-tab') || 'extract') !== 'subtable') return;
+	    _gridSubtablePreviewPointerDown = true;
+	},
+	true
+    );
+    if (!_gridSubtablePreviewGlobalMouseUpBound) {
+	_gridSubtablePreviewGlobalMouseUpBound = true;
+	window.addEventListener('mouseup', enduxGridSubtablePreviewGlobalMouseUp, true);
+    }
 
-    right.appendChild(status);
+    right.appendChild(statusRow);
     right.appendChild(selectionPath);
     right.appendChild(preview);
 
@@ -3454,8 +5735,229 @@ function injectGridExtractorPanel() {
 	});
     });
 
+    const subtablePane = document.createElement('div');
+    subtablePane.setAttribute('data-endux-grid-tab-pane', 'subtable');
+    Object.assign(subtablePane.style, {
+	display: 'none',
+	flexDirection: 'column',
+	flex: '1',
+	minHeight: '0',
+	overflow: 'auto',
+	gap: '10px',
+	fontSize: '13px',
+	color: '#333',
+	boxSizing: 'border-box'
+    });
+    const subtableTitle = document.createElement('div');
+    subtableTitle.textContent = 'Podtabela — pola i nawigacja';
+    Object.assign(subtableTitle.style, { fontWeight: '700', fontSize: '14px', marginBottom: '2px' });
+    subtablePane.appendChild(subtableTitle);
+
+    const subtableIntro = document.createElement('p');
+    subtableIntro.style.margin = '0';
+    subtableIntro.style.lineHeight = '1.45';
+    subtableIntro.style.color = '#444';
+    subtableIntro.innerHTML =
+	'<strong>Wiersz danych</strong> wybierasz w zakładce <strong>Ekstrakcja wyników</strong> (Wskaż element / Rozwiń / Cofnij). Tutaj dodajesz <strong>pola do pobrania</strong> z każdego wiersza — podgląd wartości i podświetlenie na stronie używają <strong>tego samego wiersza siatki</strong>: kliknij inny wiersz danych na stronie (w zakładce Podtabela), aby zmienić kontekst. Niżej: klik rozwinięcia i powrót przy kopiowaniu / crawlerze.';
+    subtablePane.appendChild(subtableIntro);
+
+    const subtableFieldHint = document.createElement('div');
+    subtableFieldHint.textContent =
+	'Pola (tekst z elementu): bez wyboru wiersza w Ekstrakcji — ścieżka od body; po wyborze wiersza — względem wiersza (jak rozwinięcie):';
+    Object.assign(subtableFieldHint.style, { fontWeight: '600', marginTop: '4px', fontSize: '13px' });
+    subtablePane.appendChild(subtableFieldHint);
+    const subtableFieldRow = document.createElement('div');
+    Object.assign(subtableFieldRow.style, { display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' });
+    const subtableFieldPickBtn = document.createElement('button');
+    subtableFieldPickBtn.type = 'button';
+    subtableFieldPickBtn.textContent = 'Wskaż pole';
+    Object.assign(subtableFieldPickBtn.style, {
+	padding: '8px 14px',
+	borderRadius: '6px',
+	border: 'none',
+	background: '#7c3aed',
+	color: '#fff',
+	fontWeight: '600',
+	cursor: 'pointer',
+	fontSize: '13px',
+	fontFamily: 'inherit'
+    });
+    subtableFieldPickBtn.addEventListener('click', function() {
+	startSubtableFieldPicker();
+    });
+    subtableFieldRow.appendChild(subtableFieldPickBtn);
+    subtablePane.appendChild(subtableFieldRow);
+
+    const subtableEnableRow = document.createElement('label');
+    Object.assign(subtableEnableRow.style, {
+	display: 'flex',
+	alignItems: 'center',
+	gap: '10px',
+	cursor: 'pointer',
+	fontWeight: '600',
+	flexWrap: 'wrap'
+    });
+    const subtableEnabledCb = document.createElement('input');
+    subtableEnabledCb.type = 'checkbox';
+    subtableEnabledCb.setAttribute('data-grid-subtable-enabled', '1');
+    const subtableEnabledToggle = enduxAttachToggleUi(subtableEnabledCb);
+    subtableEnableRow.appendChild(subtableEnabledToggle.wrap);
+    subtableEnableRow.appendChild(document.createTextNode('Włącz przejście po wierszach (podtabela)'));
+    subtablePane.appendChild(subtableEnableRow);
+
+    const subtableHistRow = document.createElement('label');
+    Object.assign(subtableHistRow.style, {
+	display: 'flex',
+	alignItems: 'center',
+	gap: '10px',
+	cursor: 'pointer',
+	fontWeight: '500',
+	flexWrap: 'wrap'
+    });
+    const subtableHistCb = document.createElement('input');
+    subtableHistCb.type = 'checkbox';
+    subtableHistCb.setAttribute('data-grid-subtable-use-history', '1');
+    const subtableHistToggle = enduxAttachToggleUi(subtableHistCb);
+    subtableHistRow.appendChild(subtableHistToggle.wrap);
+    subtableHistRow.appendChild(
+	document.createTextNode('Powrót przez Back przeglądarki')
+    );
+    subtablePane.appendChild(subtableHistRow);
+
+    const subtableDebugRow = document.createElement('label');
+    Object.assign(subtableDebugRow.style, {
+	display: 'flex',
+	alignItems: 'center',
+	gap: '10px',
+	cursor: 'pointer',
+	fontWeight: '500',
+	flexWrap: 'wrap'
+    });
+    const subtableDebugCb = document.createElement('input');
+    subtableDebugCb.type = 'checkbox';
+    subtableDebugCb.setAttribute('data-grid-subtable-debug', '1');
+    const subtableDebugToggle = enduxAttachToggleUi(subtableDebugCb);
+    subtableDebugRow.appendChild(subtableDebugToggle.wrap);
+    subtableDebugRow.appendChild(
+	document.createTextNode('Debug')
+    );
+    subtablePane.appendChild(subtableDebugRow);
+
+    const expandLbl = document.createElement('div');
+    expandLbl.textContent = 'Klik rozwijający (względem każdego wiersza danych):';
+    expandLbl.style.fontWeight = '600';
+    expandLbl.style.marginTop = '4px';
+    subtablePane.appendChild(expandLbl);
+    const expandRow = document.createElement('div');
+    Object.assign(expandRow.style, { display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' });
+    const expandPickBtn = document.createElement('button');
+    expandPickBtn.type = 'button';
+    expandPickBtn.setAttribute('data-grid-subtable-expand-btn', '1');
+    expandPickBtn.textContent = 'Wskaż klik rozwijający';
+    Object.assign(expandPickBtn.style, {
+	padding: '6px 12px',
+	borderRadius: '6px',
+	border: '1px solid #0f766e',
+	background: '#ccfbf1',
+	color: '#115e59',
+	fontWeight: '600',
+	cursor: 'pointer',
+	fontSize: '12px',
+	fontFamily: 'inherit'
+    });
+    expandPickBtn.addEventListener('click', function() {
+	startSubtableExpandPicker();
+    });
+    const expandDisplay = document.createElement('span');
+    expandDisplay.setAttribute('data-grid-subtable-expand-display', '1');
+    Object.assign(expandDisplay.style, {
+	fontSize: '12px',
+	color: '#64748b',
+	flex: '1',
+	minWidth: '0',
+	whiteSpace: 'nowrap'
+    });
+    expandDisplay.textContent = 'Nie wybrano';
+    expandRow.appendChild(expandPickBtn);
+    expandRow.appendChild(expandDisplay);
+    subtablePane.appendChild(expandRow);
+
+    const backLbl = document.createElement('div');
+    backLbl.textContent = 'Klik powrotu (dokument — ten sam co rozwinięcie lub np. „Wstecz”):';
+    backLbl.style.fontWeight = '600';
+    backLbl.style.marginTop = '6px';
+    subtablePane.appendChild(backLbl);
+    const backRow = document.createElement('div');
+    Object.assign(backRow.style, { display: 'flex', flexWrap: 'wrap', gap: '8px', alignItems: 'center' });
+    const backPickBtn = document.createElement('button');
+    backPickBtn.type = 'button';
+    backPickBtn.setAttribute('data-grid-subtable-back-btn', '1');
+    backPickBtn.textContent = 'Wskaż powrót';
+    Object.assign(backPickBtn.style, {
+	padding: '6px 12px',
+	borderRadius: '6px',
+	border: '1px solid #1d4ed8',
+	background: '#dbeafe',
+	color: '#1e40af',
+	fontWeight: '600',
+	cursor: 'pointer',
+	fontSize: '12px',
+	fontFamily: 'inherit'
+    });
+    backPickBtn.addEventListener('click', function() {
+	startSelectorPicker(
+	    'gridSubtableBackSelector',
+	    '🎯 Kliknij element powrotu (np. Wstecz / zamknij) — Esc lub Anuluj w nagłówku panelu.'
+	);
+    });
+    const backDisplay = document.createElement('span');
+    backDisplay.setAttribute('data-grid-subtable-back-display', '1');
+    Object.assign(backDisplay.style, {
+	fontSize: '12px',
+	color: '#64748b',
+	flex: '1',
+	minWidth: '0',
+	whiteSpace: 'nowrap'
+    });
+    backDisplay.textContent = 'Nie wybrano';
+    backRow.appendChild(backPickBtn);
+    backRow.appendChild(backDisplay);
+    subtablePane.appendChild(backRow);
+
+    const subtableFoot = document.createElement('div');
+    subtableFoot.textContent =
+	'Jeśli nie używasz history.back(), musisz wskazać przycisk powrotu — inaczej przejście zostanie pominięte. history.back() może zmienić stronę; wtedy pętla się przerwie.';
+    Object.assign(subtableFoot.style, { fontSize: '12px', color: '#6c757d', lineHeight: '1.4' });
+    subtablePane.appendChild(subtableFoot);
+
+    subtableEnabledCb.addEventListener('change', function() {
+	chrome.storage.local.set({ gridSubtableEnabled: subtableEnabledCb.checked });
+    });
+    subtableHistCb.addEventListener('change', function() {
+	chrome.storage.local.set({ gridSubtableUseHistoryBack: subtableHistCb.checked });
+    });
+    subtableDebugCb.addEventListener('change', function() {
+	chrome.storage.local.set({ gridSubtableDebugConfirm: subtableDebugCb.checked }, function() {
+	    if (chrome.runtime.lastError) return;
+	    enduxRefreshSubtableTabDisplays();
+	});
+    });
+
+    chrome.storage.local.get(ENDUX_SUBTABLE_STORAGE_KEYS, function(su) {
+	if (chrome.runtime.lastError || !subtableEnabledCb.isConnected) return;
+	enduxSyncSubtableExportCacheFromSlice(su || {});
+	subtableEnabledCb.checked = su.gridSubtableEnabled === true;
+	subtableEnabledToggle.sync();
+	subtableHistCb.checked = su.gridSubtableUseHistoryBack === true;
+	subtableHistToggle.sync();
+	subtableDebugCb.checked = su.gridSubtableDebugConfirm === true;
+	subtableDebugToggle.sync();
+	enduxApplySubtableDisplaysToPanel(root, su || {});
+    });
+
     tabHost.appendChild(extractPane);
     tabHost.appendChild(crawlPane);
+    tabHost.appendChild(subtablePane);
     left.appendChild(tabBar);
     left.appendChild(tabHost);
     body.appendChild(left);
@@ -3561,6 +6063,9 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
     } else if (request.action === 'updateClipboardInfo') {
 	// Update clipboard info on this page
 	updateAllClipboardInfo();
+	sendResponse({ success: true });
+    } else if (request.action === 'enduxApplyStorageReset') {
+	enduxApplyFullSettingsReset();
 	sendResponse({ success: true });
     } else if (request.action === 'startCrawler') {
         handleCrawlerStep();
@@ -4119,7 +6624,7 @@ function injectTablePanelsInternal() {
 	    const clipboardInfo = document.createElement('span');
 	    clipboardInfo.id = 'clipboard-info-' + Math.random().toString(36).substr(2, 9);
 	    clipboardInfo.style.fontSize = '13px';
-	    clipboardInfo.style.color = '#6c757d';
+	    clipboardInfo.style.color = ENDUX_CLIPBOARD_ROW_COUNT_COLOR;
 	    clipboardInfo.style.fontWeight = '500';
 	    clipboardInfo.style.cursor = 'pointer';
 	    clipboardInfo.style.textDecoration = 'underline';
@@ -4128,11 +6633,11 @@ function injectTablePanelsInternal() {
 	    
 	    // Hover effect for clipboard info
 	    clipboardInfo.addEventListener('mouseenter', function() {
-		clipboardInfo.style.color = '#007bff';
+		clipboardInfo.style.color = ENDUX_CLIPBOARD_ROW_COUNT_HOVER;
 	    });
 	    
 	    clipboardInfo.addEventListener('mouseleave', function() {
-		clipboardInfo.style.color = '#6c757d';
+		clipboardInfo.style.color = ENDUX_CLIPBOARD_ROW_COUNT_COLOR;
 	    });
 	    
 	    // Open clipboard in new tab on click
@@ -4213,10 +6718,10 @@ function injectTablePanelsInternal() {
 		});
 		// Re-add hover effects
 		clipboardInfoBelow.addEventListener('mouseenter', function() {
-		    clipboardInfoBelow.style.color = '#007bff';
+		    clipboardInfoBelow.style.color = ENDUX_CLIPBOARD_ROW_COUNT_HOVER;
 		});
 		clipboardInfoBelow.addEventListener('mouseleave', function() {
-		    clipboardInfoBelow.style.color = '#6c757d';
+		    clipboardInfoBelow.style.color = ENDUX_CLIPBOARD_ROW_COUNT_COLOR;
 		});
 	    }
 	    
@@ -4415,7 +6920,9 @@ window.addEventListener('load', function() {
 	setTimeout(function() {
 	    try {
 		if (!chrome.runtime?.id) return; // Extension context invalidated
-		chrome.storage.local.get(['extensionEnabled', 'autoAppend', 'crawlerActive', 'includeHeaderPreference'], function(result) {
+		chrome.storage.local.get(
+		    ['extensionEnabled', 'autoAppend', 'crawlerActive', 'includeHeaderPreference'].concat(ENDUX_SUBTABLE_STORAGE_KEYS),
+		    function(result) {
 		    if (chrome.runtime.lastError) return;
 		    if (result.extensionEnabled === false) return;
 		    if (result.crawlerActive) {
@@ -4426,6 +6933,7 @@ window.addEventListener('load', function() {
 		    if (_gridPanelRoot && _gridSelectedEl && !_gridSelectedEl.isConnected) {
 			tryRebindGridSelectionFromCachedSelectors();
 		    }
+		    enduxSyncSubtableExportCacheFromSlice(result);
 		    var gridPayload = enduxGetGridPanelAutoAppendPayload();
 		    if (gridPayload) {
 			var gridBodyHash = createHash(gridPayload.bodyText);
