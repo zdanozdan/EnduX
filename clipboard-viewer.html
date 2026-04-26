@@ -58,6 +58,32 @@
         .copy-all-btn:active {
             transform: translateY(0);
         }
+        .header-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+        }
+        .expand-all-btn {
+            background-color: #fff;
+            color: #007bff;
+            border: 2px solid #007bff;
+            padding: 10px 18px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .expand-all-btn:hover:not(:disabled) {
+            background-color: #e7f3ff;
+        }
+        .expand-all-btn:disabled {
+            opacity: 0.65;
+            cursor: not-allowed;
+            border-color: #adb5bd;
+            color: #6c757d;
+        }
         .table-wrapper {
             overflow-x: auto;
             margin: 20px 0;
@@ -184,7 +210,10 @@
     <div class="container">
         <div class="header-container">
             <h1>📋 Zawartość schowka<span class="record-count" id="record-count">(ładowanie...)</span></h1>
-            <button id="copy-all-btn" class="copy-all-btn">📋 Kopiuj wszystko do schowka</button>
+            <div class="header-actions">
+                <button type="button" id="expand-all-btn" class="expand-all-btn" title="Załaduj od razu wszystkie wiersze">⏬ Rozwiń wszystko</button>
+                <button type="button" id="copy-all-btn" class="copy-all-btn">📋 Kopiuj wszystko do schowka</button>
+            </div>
         </div>
         <div class="table-wrapper">
             <div id="initial-loading">Ładowanie danych ze schowka...</div>

@@ -211,6 +211,8 @@
     function initializeTable(content) {
         if (!content || content.trim().length === 0) {
             initialLoading.textContent = '⚠️ Schowek jest pusty';
+            totalRows = 0;
+            updateExpandAllButtonState();
             return;
         }
         
@@ -222,6 +224,8 @@
         
         if (lines.length === 0) {
             initialLoading.textContent = '⚠️ Schowek jest pusty';
+            totalRows = 0;
+            updateExpandAllButtonState();
             return;
         }
         
@@ -255,6 +259,7 @@
         if (totalRows > loadedCount) {
             loadingIndicator.style.display = 'block';
         }
+        updateExpandAllButtonState();
     }
     
     // Helper function to check if a row is a header (matches first row)
@@ -277,84 +282,97 @@
         return true;
     }
     
-    function loadInitialRows() {
-        const initialRows = allRows.slice(0, loadedCount);
+    /** Append one data row at rowIndex. Skips if row was removed from DOM flow (deleted). */
+    function appendSingleDataRow(rowIndex) {
+        if (deletedRows.has(rowIndex)) return;
         
-        initialRows.forEach((row, localIndex) => {
-            const rowIndex = localIndex; // Actual row index in allRows
-            const tr = document.createElement('tr');
-            tr.setAttribute('data-row-index', rowIndex);
-            
-            // Mark header rows (first row or rows matching first row)
-            if (isHeaderRow(rowIndex)) {
-                tr.className = 'header-row';
-            }
-            
-            // Add delete button as first column (for all rows including headers)
-            const deleteCell = document.createElement('td');
-            deleteCell.className = 'delete-cell';
-            const deleteBtn = document.createElement('button');
-            deleteBtn.className = 'delete-btn';
-            deleteBtn.setAttribute('title', 'Usuń wiersz');
-            deleteBtn.setAttribute('data-row-index', rowIndex);
-            deleteBtn.textContent = '🗑️';
-            deleteBtn.addEventListener('click', function(e) {
-                e.stopPropagation();
-                deleteRow(rowIndex);
-            });
-            deleteCell.appendChild(deleteBtn);
-            tr.appendChild(deleteCell);
-            
-            for (let i = 0; i < maxCols; i++) {
-                const cellContent = escapeHtml(row[i] || '');
-                const cellClass = i === 0 ? 'row-number' : '';
-                const td = document.createElement('td');
-                td.className = cellClass;
-                td.setAttribute('data-col-index', i);
-                
-                // Add delete column button in header rows
-                if (isHeaderRow(rowIndex)) {
-                    const cellWrapper = document.createElement('div');
-                    cellWrapper.style.display = 'flex';
-                    cellWrapper.style.alignItems = 'center';
-                    cellWrapper.style.justifyContent = 'space-between';
-                    cellWrapper.style.gap = '8px';
-                    
-                    const textSpan = document.createElement('span');
-                    textSpan.textContent = cellContent;
-                    cellWrapper.appendChild(textSpan);
-                    
-                    const deleteColBtn = document.createElement('button');
-                    deleteColBtn.className = 'delete-col-btn';
-                    deleteColBtn.setAttribute('title', 'Usuń kolumnę');
-                    deleteColBtn.setAttribute('data-col-index', i);
-                    deleteColBtn.textContent = '✕';
-                    deleteColBtn.style.cssText = 'background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white; cursor: pointer; padding: 2px 6px; border-radius: 3px; font-size: 12px; font-weight: bold; opacity: 0.7; transition: all 0.2s;';
-                    deleteColBtn.addEventListener('mouseenter', function() {
-                        this.style.opacity = '1';
-                        this.style.background = 'rgba(255,255,255,0.3)';
-                    });
-                    deleteColBtn.addEventListener('mouseleave', function() {
-                        this.style.opacity = '0.7';
-                        this.style.background = 'rgba(255,255,255,0.2)';
-                    });
-                    deleteColBtn.addEventListener('click', function(e) {
-                        e.stopPropagation();
-                        const colIndex = parseInt(this.getAttribute('data-col-index'));
-                        deleteColumn(colIndex);
-                    });
-                    cellWrapper.appendChild(deleteColBtn);
-                    
-                    td.appendChild(cellWrapper);
-                } else {
-                    td.textContent = cellContent;
-                }
-                
-                tr.appendChild(td);
-            }
-            
-            table.appendChild(tr);
+        const row = allRows[rowIndex];
+        const tr = document.createElement('tr');
+        tr.setAttribute('data-row-index', rowIndex);
+        
+        if (isHeaderRow(rowIndex)) {
+            tr.className = 'header-row';
+        }
+        
+        const deleteCell = document.createElement('td');
+        deleteCell.className = 'delete-cell';
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'delete-btn';
+        deleteBtn.setAttribute('title', 'Usuń wiersz');
+        deleteBtn.setAttribute('data-row-index', rowIndex);
+        deleteBtn.textContent = '🗑️';
+        deleteBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            deleteRow(rowIndex);
         });
+        deleteCell.appendChild(deleteBtn);
+        tr.appendChild(deleteCell);
+        
+        for (let j = 0; j < maxCols; j++) {
+            const cellContent = escapeHtml(row[j] || '');
+            const cellClass = j === 0 ? 'row-number' : '';
+            const td = document.createElement('td');
+            td.className = cellClass;
+            td.setAttribute('data-col-index', j);
+            
+            if (isHeaderRow(rowIndex)) {
+                const cellWrapper = document.createElement('div');
+                cellWrapper.style.display = 'flex';
+                cellWrapper.style.alignItems = 'center';
+                cellWrapper.style.justifyContent = 'space-between';
+                cellWrapper.style.gap = '8px';
+                
+                const textSpan = document.createElement('span');
+                textSpan.textContent = cellContent;
+                cellWrapper.appendChild(textSpan);
+                
+                const deleteColBtn = document.createElement('button');
+                deleteColBtn.className = 'delete-col-btn';
+                deleteColBtn.setAttribute('title', 'Usuń kolumnę');
+                deleteColBtn.setAttribute('data-col-index', j);
+                deleteColBtn.textContent = '✕';
+                deleteColBtn.style.cssText = 'background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white; cursor: pointer; padding: 2px 6px; border-radius: 3px; font-size: 12px; font-weight: bold; opacity: 0.7; transition: all 0.2s;';
+                deleteColBtn.addEventListener('mouseenter', function() {
+                    this.style.opacity = '1';
+                    this.style.background = 'rgba(255,255,255,0.3)';
+                });
+                deleteColBtn.addEventListener('mouseleave', function() {
+                    this.style.opacity = '0.7';
+                    this.style.background = 'rgba(255,255,255,0.2)';
+                });
+                deleteColBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    const colIndex = parseInt(this.getAttribute('data-col-index'));
+                    deleteColumn(colIndex);
+                });
+                cellWrapper.appendChild(deleteColBtn);
+                
+                td.appendChild(cellWrapper);
+            } else {
+                td.textContent = cellContent;
+            }
+            
+            tr.appendChild(td);
+        }
+        
+        table.appendChild(tr);
+    }
+    
+    function loadInitialRows() {
+        for (let i = 0; i < loadedCount; i++) {
+            appendSingleDataRow(i);
+        }
+    }
+    
+    function finishLoadingBatch() {
+        if (loadingIndicator) {
+            loadingIndicator.classList.remove('loading');
+            if (loadedCount >= totalRows) {
+                loadingIndicator.style.display = 'none';
+            }
+        }
+        updateExpandAllButtonState();
+        updateCounts();
     }
     
     function loadMoreRows() {
@@ -362,6 +380,7 @@
             if (loadingIndicator) {
                 loadingIndicator.style.display = 'none';
             }
+            updateExpandAllButtonState();
             return;
         }
         
@@ -369,101 +388,43 @@
             loadingIndicator.classList.add('loading');
         }
         
-        // Simulate slight delay for smooth loading
         setTimeout(function() {
             const endIndex = Math.min(loadedCount + batchSize, totalRows);
-            
             for (let i = loadedCount; i < endIndex; i++) {
-                if (deletedRows.has(i)) continue;
-                
-                const row = allRows[i];
-                const tr = document.createElement('tr');
-                tr.setAttribute('data-row-index', i);
-                
-                // Mark header rows (first row or rows matching first row)
-                if (isHeaderRow(i)) {
-                    tr.className = 'header-row';
-                }
-                
-                // Add delete button as first column (for all rows including headers)
-                const deleteCell = document.createElement('td');
-                deleteCell.className = 'delete-cell';
-                const deleteBtn = document.createElement('button');
-                deleteBtn.className = 'delete-btn';
-                deleteBtn.setAttribute('title', 'Usuń wiersz');
-                deleteBtn.setAttribute('data-row-index', i);
-                deleteBtn.textContent = '🗑️';
-                deleteBtn.addEventListener('click', function(e) {
-                    e.stopPropagation();
-                    const rowIndex = parseInt(this.getAttribute('data-row-index'));
-                    deleteRow(rowIndex);
-                });
-                deleteCell.appendChild(deleteBtn);
-                tr.appendChild(deleteCell);
-                
-                for (let j = 0; j < maxCols; j++) {
-                    const cellContent = escapeHtml(row[j] || '');
-                    const cellClass = j === 0 ? 'row-number' : '';
-                    const td = document.createElement('td');
-                    td.className = cellClass;
-                    td.setAttribute('data-col-index', j);
-                    
-                    // Add delete column button in header rows
-                    if (isHeaderRow(i)) {
-                        const cellWrapper = document.createElement('div');
-                        cellWrapper.style.display = 'flex';
-                        cellWrapper.style.alignItems = 'center';
-                        cellWrapper.style.justifyContent = 'space-between';
-                        cellWrapper.style.gap = '8px';
-                        
-                        const textSpan = document.createElement('span');
-                        textSpan.textContent = cellContent;
-                        cellWrapper.appendChild(textSpan);
-                        
-                        const deleteColBtn = document.createElement('button');
-                        deleteColBtn.className = 'delete-col-btn';
-                        deleteColBtn.setAttribute('title', 'Usuń kolumnę');
-                        deleteColBtn.setAttribute('data-col-index', j);
-                        deleteColBtn.textContent = '✕';
-                        deleteColBtn.style.cssText = 'background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white; cursor: pointer; padding: 2px 6px; border-radius: 3px; font-size: 12px; font-weight: bold; opacity: 0.7; transition: all 0.2s;';
-                        deleteColBtn.addEventListener('mouseenter', function() {
-                            this.style.opacity = '1';
-                            this.style.background = 'rgba(255,255,255,0.3)';
-                        });
-                        deleteColBtn.addEventListener('mouseleave', function() {
-                            this.style.opacity = '0.7';
-                            this.style.background = 'rgba(255,255,255,0.2)';
-                        });
-                        deleteColBtn.addEventListener('click', function(e) {
-                            e.stopPropagation();
-                            const colIndex = parseInt(this.getAttribute('data-col-index'));
-                            deleteColumn(colIndex);
-                        });
-                        cellWrapper.appendChild(deleteColBtn);
-                        
-                        td.appendChild(cellWrapper);
-                    } else {
-                        td.textContent = cellContent;
-                    }
-                    
-                    tr.appendChild(td);
-                }
-                
-                table.appendChild(tr);
+                appendSingleDataRow(i);
             }
-            
             loadedCount = endIndex;
-            if (displayedCountSpan) {
-                displayedCountSpan.textContent = loadedCount;
-            }
-            
-            if (loadingIndicator) {
-                loadingIndicator.classList.remove('loading');
-                if (loadedCount >= totalRows) {
-                    loadingIndicator.style.display = 'none';
-                }
-            }
+            finishLoadingBatch();
         }, 100);
+    }
+    
+    function loadAllRowsNow() {
+        if (loadedCount >= totalRows) {
+            updateExpandAllButtonState();
+            return;
+        }
+        if (loadingIndicator) {
+            loadingIndicator.classList.remove('loading');
+        }
+        for (let i = loadedCount; i < totalRows; i++) {
+            appendSingleDataRow(i);
+        }
+        loadedCount = totalRows;
+        finishLoadingBatch();
+    }
+    
+    function updateExpandAllButtonState() {
+        const btn = document.getElementById('expand-all-btn');
+        if (!btn) return;
+        const noData = totalRows === 0;
+        const allShown = noData || loadedCount >= totalRows;
+        btn.disabled = noData || allShown;
+        btn.textContent = allShown && !noData ? '✓ Wszystkie rekordy widoczne' : '⏬ Rozwiń wszystko';
+        btn.title = noData
+            ? 'Brak danych w schowku'
+            : allShown
+                ? 'Cała zawartość jest już w tabeli (bez paginacji)'
+                : 'Załaduj od razu wszystkie wiersze, bez przewijania';
     }
     
     // Load more when scrolling near bottom
@@ -507,6 +468,15 @@
         initializeTable(content);
     });
 
+    const expandAllBtn = document.getElementById('expand-all-btn');
+    if (expandAllBtn) {
+        expandAllBtn.addEventListener('click', function() {
+            if (expandAllBtn.disabled || loadedCount >= totalRows) return;
+            loadAllRowsNow();
+            showToast('✅ Wczytano wszystkie rekordy');
+        });
+    }
+    
     // Handle Copy All button
     const copyAllBtn = document.getElementById('copy-all-btn');
     if (copyAllBtn) {
