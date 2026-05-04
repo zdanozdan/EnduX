@@ -155,6 +155,11 @@ async function handleCrawlerStep() {
     try {
 	if (!chrome.runtime?.id) return;
     } catch (e) { return; }
+    try {
+	if (window !== window.top) return;
+    } catch (e) {
+	return;
+    }
     if (_crawlerStepRunning) {
         console.log('EnduX Crawler: Poprzedni krok jeszcze trwa, pomijanie.');
         return;
@@ -174,7 +179,9 @@ async function handleCrawlerStep() {
 	].concat(ENDUX_SUBTABLE_STORAGE_KEYS), resolve);
     });
 
-    if (!result.extensionEnabled || !result.crawlerActive || (!result.crawlerClass && !result.crawlerPaginator)) {
+    const _cc = String(result.crawlerClass || '').trim();
+    const _cp = String(result.crawlerPaginator || '').trim();
+    if (!result.extensionEnabled || !result.crawlerActive || (!_cc && !_cp)) {
         console.log('EnduX Crawler: Crawler nie jest aktywny lub brak konfiguracji.');
         _crawlerStepRunning = false;
         return;
@@ -244,35 +251,32 @@ async function handleCrawlerStep() {
 	    });
 	});
     } else {
-	copyResult = await copyTableToClipboard(crawlerHtmlTable, includeHeader, true);
+	copyResult = await copyTableToClipboard(crawlerHtmlTable, includeHeader, true, true);
+    }
+
+    if (!copyResult.success && !copyResult.isDuplicate) {
+        _crawlerStepRunning = false;
+        return;
     }
 
     if (copyResult.isDuplicate) {
-        console.log('EnduX Crawler: Wykryto duplikat, zatrzymywanie.');
-        chrome.storage.local.set({ crawlerActive: false });
-        showToast('⚠️ Crawler: Wykryto duplikaty, zatrzymano.', 'warning');
-        _crawlerStepRunning = false;
-        return;
+	// Pełne przeładowanie często daje ten sam hash (ta sama tabela zanim doczyta page=N); nie gasimy sesji crawla.
+	console.log('EnduX Crawler: Duplikat skrótu treści — pomijam dopisanie, przechodzę do następnej strony.');
+    } else {
+	console.log('EnduX Crawler: Dane zapisane pomyślnie.');
+	showToast('🚀 Crawler: Dane zapisane', 'success', copyResult.rowCount);
+	updateAllClipboardInfo();
+	if (crawlerHtmlTable) {
+	    syncGridPanelPreviewFromCrawlerTable(crawlerHtmlTable);
+	}
+	// Mark that we're no longer on the first page
+	if (isFirstPage) chrome.storage.local.set({ crawlerIsFirstPage: false });
     }
-
-    if (!copyResult.success) {
-        _crawlerStepRunning = false;
-        return;
-    }
-
-    console.log('EnduX Crawler: Dane zapisane pomyślnie.');
-    showToast('🚀 Crawler: Dane zapisane', 'success', copyResult.rowCount);
-    updateAllClipboardInfo();
-    if (crawlerHtmlTable) {
-	syncGridPanelPreviewFromCrawlerTable(crawlerHtmlTable);
-    }
-    // Mark that we're no longer on the first page
-    if (isFirstPage) chrome.storage.local.set({ crawlerIsFirstPage: false });
 
     // 1. URL paginator (e.g. &page=1-100)
-    if (result.crawlerPaginator && result.crawlerPaginator.includes('=') && result.crawlerPaginator.includes('-')) {
-        console.log('EnduX Crawler: Próba użycia Paginatora:', result.crawlerPaginator);
-        const cleanPaginator = result.crawlerPaginator.startsWith('&') ? result.crawlerPaginator.substring(1) : result.crawlerPaginator;
+    if (_cp && _cp.includes('=') && _cp.includes('-')) {
+        console.log('EnduX Crawler: Próba użycia Paginatora:', _cp);
+        const cleanPaginator = _cp.startsWith('&') ? _cp.substring(1) : _cp;
         const [paramPart, rangePart] = cleanPaginator.split('=');
         const [startPage, endPage] = rangePart.split('-').map(Number);
 
@@ -303,14 +307,20 @@ async function handleCrawlerStep() {
     }
 
     // 2. "Next" button click
-    if (!result.crawlerClass) {
+    if (!_cc) {
+        const paginatorLooksConfigured = _cp && _cp.includes('=') && _cp.includes('-');
+        if (paginatorLooksConfigured) {
+            console.log('EnduX Crawler: Tylko paginator — brak obsługi w tym kroku (parametr/URL?). Nie wyłączam crawla; sprawdź zapis np. &page=1-100 i nazwę parametru w adresie.');
+            _crawlerStepRunning = false;
+            return;
+        }
         console.log('EnduX Crawler: Brak klasy przycisku Dalej i paginator nie obsłużył przejścia.');
         chrome.storage.local.set({ crawlerActive: false });
         _crawlerStepRunning = false;
         return;
     }
 
-    const rawSelector = result.crawlerClass.trim();
+    const rawSelector = _cc;
     let nextButton = null;
 
     // Try selector directly (picker-generated: a.next, ul > li > a, #next-btn, .btn.next, etc.)
